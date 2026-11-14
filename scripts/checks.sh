@@ -115,9 +115,21 @@ print(match.group(1))
 '
 
 check_unsafe_allow() {
-    local host sysroot python target output status worst=0 failed=()
-    if ! host=$(rustc -vV | sed -n 's/^host: //p') || ! sysroot=$(rustc --print sysroot); then
-        echo "rustc -vV or rustc --print sysroot failed. Check that the toolchain in rust-toolchain.toml is installed."
+    local version host sysroot python target output status worst=0 failed=()
+    if ! version=$(rustc -vV); then
+        echo "rustc -vV failed. Check that the toolchain in rust-toolchain.toml is installed."
+        return 2
+    fi
+    if ! host=$(sed -n 's/^host: //p' <<<"$version"); then
+        echo "Reading the host line from the rustc -vV output failed. Check that sed works."
+        return 2
+    fi
+    if [[ -z $host ]]; then
+        echo "rustc -vV printed no host line. Check which rustc is first on PATH."
+        return 2
+    fi
+    if ! sysroot=$(rustc --print sysroot); then
+        echo "rustc --print sysroot failed. Check that the toolchain in rust-toolchain.toml is installed."
         return 2
     fi
     if [[ $host != "$HOST_TARGET" ]]; then
