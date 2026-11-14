@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 98 72" width="98" height="72" role="img" aria-label="Nasion">
+  <title>Nasion</title>
+  <path d="M8.00 58.00 A39.0 39.0 0 0 1 86.00 58.00" fill="none" stroke="#10263d" stroke-width="3.3" stroke-linecap="round"/>
+  <circle cx="84.09" cy="45.95" r="3.13" fill="#ffffff" stroke="#10263d" stroke-width="1.81"/>
+  <circle cx="69.92" cy="26.45" r="3.13" fill="#ffffff" stroke="#10263d" stroke-width="1.81"/>
+  <circle cx="47.00" cy="19.00" r="3.13" fill="#ffffff" stroke="#10263d" stroke-width="1.81"/>
+  <circle cx="24.08" cy="26.45" r="3.13" fill="#ffffff" stroke="#10263d" stroke-width="1.81"/>
+  <circle cx="9.91" cy="45.95" r="3.13" fill="#ffffff" stroke="#10263d" stroke-width="1.81"/>
+  <circle cx="86.00" cy="58.00" r="5.77" fill="#1b5fae"/>
+</svg>

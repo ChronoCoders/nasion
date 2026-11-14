@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nasion: The Reference Bench for Brain Signal Software</title>
+<meta name="description" content="Test, compare, and verify EEG tools on open recordings.">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2064%2064%22%20width%3D%2264%22%20height%3D%2264%22%20role%3D%22img%22%20aria-label%3D%22Nasion%22%3E%20%20%20%3Ctitle%3ENasion%3C%2Ftitle%3E%20%20%20%3Crect%20width%3D%2264%22%20height%3D%2264%22%20rx%3D%2212%22%20fill%3D%22%2310263d%22%2F%3E%20%20%20%3Cpath%20d%3D%22M13%2043%20A19%2019%200%200%201%2051%2043%22%20fill%3D%22none%22%20stroke%3D%22%23ffffff%22%20stroke-width%3D%226%22%20stroke-linecap%3D%22round%22%2F%3E%20%20%20%3Ccircle%20cx%3D%2251%22%20cy%3D%2243%22%20r%3D%228.5%22%20fill%3D%22%237fb2ee%22%2F%3E%20%3C%2Fsvg%3E%20">
+<style>
+  :root {
+    --navy: #10263d;
+    --navy-deep: #0a1a2b;
+    --blue: #1b5fae;
+    --blue-dark: #154a88;
+    --ink: #1d2733;
+    --muted: #5b6876;
+    --line: #dde3ea;
+    --page: #f6f8fa;
+    --card: #ffffff;
+    --amber: #8a5a00;
+    --amber-bg: #fff4d6;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0; font-family: var(--sans); color: var(--ink); background: var(--page); line-height: 1.55; font-size: 16px; }
+  a { color: var(--blue); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  a:focus-visible, button:focus-visible, input:focus-visible, summary:focus-visible { outline: 3px solid #7fb2ee; outline-offset: 2px; }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 0 24px; }
+
+  .preview { background: var(--amber-bg); color: var(--amber); font-size: 14px; border-bottom: 1px solid #f0dca0; }
+  .preview .wrap { padding-top: 8px; padding-bottom: 8px; }
+
+  header.nav { background: var(--card); border-bottom: 1px solid var(--line); }
+  .nav .wrap { display: flex; align-items: center; gap: 28px; min-height: 64px; flex-wrap: wrap; }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 22px; color: var(--navy); letter-spacing: 0.2px; }
+  .brand:hover { text-decoration: none; }
+  .links { display: flex; gap: 22px; flex-wrap: wrap; }
+  .links a { color: var(--ink); font-size: 15px; }
+  .spacer { flex: 1 1 auto; }
+  .search { display: flex; align-items: center; }
+  .search input { font: inherit; font-size: 14px; padding: 8px 12px; border: 1px solid #c3ccd6; border-radius: 4px; width: 220px; background: #fff; color: var(--ink); }
+
+  .hero { background: var(--navy); color: #fff; position: relative; overflow: hidden; }
+  .hero svg.trace { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0.16; }
+  .hero .wrap { position: relative; padding-top: 84px; padding-bottom: 88px; }
+  .hero h1 { font-size: 44px; line-height: 1.15; margin: 0 0 14px; font-weight: 700; max-width: 760px; }
+  .hero p { font-size: 20px; margin: 0 0 30px; color: #d5e0ec; max-width: 620px; }
+  .btns { display: flex; gap: 14px; flex-wrap: wrap; }
+  .btn { display: inline-block; padding: 12px 22px; border-radius: 4px; font-weight: 600; font-size: 16px; border: 1px solid transparent; }
+  .btn:hover { text-decoration: none; }
+  .btn.primary { background: #fff; color: var(--navy); }
+  .btn.primary:hover { background: #e8eef5; }
+  .btn.ghost { border-color: #9db4cc; color: #fff; }
+  .btn.ghost:hover { background: rgba(255,255,255,0.08); }
+
+  section { padding: 44px 0; }
+  section.alt { background: var(--card); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+  .head { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
+  h2 { font-size: 24px; margin: 0; color: var(--navy); padding-left: 12px; border-left: 4px solid var(--blue); line-height: 1.2; }
+  .more { font-size: 15px; white-space: nowrap; }
+
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 20px; display: flex; flex-direction: column; }
+  section.alt .card { background: var(--page); }
+  .card h3 { font-size: 18px; margin: 0 0 8px; line-height: 1.3; }
+  .card p { margin: 0 0 14px; color: #33404d; font-size: 15px; }
+  .tags { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+  .tag { font-size: 12px; padding: 2px 8px; border-radius: 3px; border: 1px solid #c3ccd6; color: var(--muted); background: #fff; }
+  .tag.access { border-color: #a9c6ea; color: var(--blue-dark); background: #eef5fd; }
+  .tag.state { border-color: #e5cf8f; color: var(--amber); background: var(--amber-bg); }
+  .date { font-family: var(--mono); font-size: 13px; color: var(--muted); margin-bottom: 8px; }
+
+  details { margin-top: auto; border-top: 1px solid var(--line); padding-top: 10px; }
+  summary { cursor: pointer; font-size: 14px; color: var(--blue); list-style: none; display: flex; align-items: center; gap: 8px; }
+  summary::-webkit-details-marker { display: none; }
+  summary::before { content: ""; width: 7px; height: 7px; border-right: 2px solid var(--blue); border-bottom: 2px solid var(--blue); transform: rotate(-45deg); transition: transform 0.15s ease; flex: 0 0 auto; }
+  details[open] summary::before { transform: rotate(45deg); }
+  details p { margin: 10px 0 0; font-size: 14px; color: var(--muted); font-family: var(--mono); line-height: 1.6; }
+
+  .about { display: grid; grid-template-columns: 250px 1fr; gap: 32px; align-items: center; }
+  .about p { margin: 0; font-size: 17px; max-width: 700px; }
+
+  footer { background: var(--navy-deep); color: #c5d1de; font-size: 14px; padding: 40px 0 32px; }
+  footer .cols { display: grid; grid-template-columns: 1fr 1fr 2fr; gap: 28px; }
+  footer h4 { margin: 0 0 10px; font-size: 13px; text-transform: uppercase; letter-spacing: 0.8px; color: #fff; }
+  footer ul { list-style: none; margin: 0; padding: 0; }
+  footer li { margin-bottom: 6px; }
+  footer a { color: #c5d1de; }
+  footer p { margin: 0 0 8px; }
+
+  @media (max-width: 860px) {
+    .grid { grid-template-columns: 1fr; }
+    .about { grid-template-columns: 1fr; }
+    footer .cols { grid-template-columns: 1fr; }
+    .hero h1 { font-size: 32px; }
+    .hero p { font-size: 18px; }
+    .hero .wrap { padding-top: 56px; padding-bottom: 60px; }
+    .search input { width: 100%; }
+    .search { flex: 1 1 100%; padding-bottom: 12px; }
+    .spacer { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<div class="preview" role="note">
+  <div class="wrap">Preview page. Nasion is not released yet, and every entry below is a sample of what is planned.</div>
+</div>
+
+<header class="nav">
+  <div class="wrap">
+    <a class="brand" href="#" aria-label="Nasion home">
+      <svg viewBox="0 0 290 72" height="40" width="161" aria-hidden="true">
+        <path d="M8.00 58.00 A39.0 39.0 0 0 1 86.00 58.00" fill="none" stroke="#10263d" stroke-width="3.3" stroke-linecap="round"/>
+  <circle cx="84.09" cy="45.95" r="3.13" fill="#ffffff" stroke="#10263d" stroke-width="1.81"/>
+  <circle cx="69.92" cy="26.45" r="3.13" fill="#ffffff" stroke="#10263d" stroke-width="1.81"/>
+  <circle cx="47.00" cy="19.00" r="3.13" fill="#ffffff" stroke="#10263d" stroke-width="1.81"/>
+  <circle cx="24.08" cy="26.45" r="3.13" fill="#ffffff" stroke="#10263d" stroke-width="1.81"/>
+  <circle cx="9.91" cy="45.95" r="3.13" fill="#ffffff" stroke="#10263d" stroke-width="1.81"/>
+  <circle cx="86.00" cy="58.00" r="5.77" fill="#1b5fae"/>
+  <path d="M32.302425106990015 34.0H25.512125534950073L10.13694721825963 10.767475035663338V34.0H3.3466476462196866V0.09700427960056857H10.13694721825963L25.512125534950073 23.378031383737515V0.09700427960056857H32.302425106990015ZM50.1206847360913 6.69329529243937Q53.12781740370899 6.69329529243937 55.383166904422254 7.905848787446503Q57.63851640513552 9.118402282453637 58.996576319543514 10.961483594864479V7.129814550641939H65.83537803138374V34.0H58.996576319543514V30.07132667617689Q57.68701854493581 31.962910128388017 55.383166904422254 33.19971469329529Q53.079315263908704 34.436519258202566 50.072182596291015 34.436519258202566Q46.677032810271044 34.436519258202566 43.88815977175464 32.690442225392296Q41.09928673323823 30.944365192582026 39.474465049928675 27.767475035663338Q37.84964336661912 24.59058487874465 37.84964336661912 20.4679029957204Q37.84964336661912 16.393723252496432 39.474465049928675 13.241084165477886Q41.09928673323823 10.08844507845934 43.88815977175464 8.390870185449355Q46.677032810271044 6.69329529243937 50.1206847360913 6.69329529243937ZM51.86676176890157 12.659058487874464Q49.975178316690446 12.659058487874464 48.37460770328103 13.580599144079885Q46.77403708987161 14.502139800285306 45.77974322396577 16.27246790299572Q44.78544935805992 18.042796005706133 44.78544935805992 20.4679029957204Q44.78544935805992 22.893009985734665 45.77974322396577 24.711840228245364Q46.77403708987161 26.530670470756064 48.398858773181175 27.50071326676177Q50.02368045649073 28.470756062767475 51.86676176890157 28.470756062767475Q53.7583452211127 28.470756062767475 55.4074179743224 27.52496433666191Q57.0564907275321 26.57917261055635 58.02653352353781 24.808844507845933Q58.996576319543514 23.038516405135518 58.996576319543514 20.56490727532097Q58.996576319543514 18.091298145506418 58.02653352353781 16.320970042796006Q57.0564907275321 14.55064194008559 55.4074179743224 13.604850213980027Q53.7583452211127 12.659058487874464 51.86676176890157 12.659058487874464ZM71.62510699001426 25.512125534950073H78.46390870185449Q78.65791726105563 27.064194008559202 79.99172610556349 28.082738944365193Q81.32553495007133 29.101283880171184 83.31412268188302 29.101283880171184Q85.25420827389443 29.101283880171184 86.34550641940086 28.325249643366618Q87.43680456490728 27.549215406562055 87.43680456490728 26.33666191155492Q87.43680456490728 25.027104136947216 86.10299572039943 24.372325249643364Q84.76918687589158 23.71754636233951 81.85905848787446 22.94151212553495Q78.85192582025678 22.21398002853067 76.9360912981455 21.437945791726104Q75.02025677603423 20.661911554921538 73.63794579172611 19.06134094151212Q72.25563480741798 17.460770328102708 72.25563480741798 14.744650499286731Q72.25563480741798 12.513552068473608 73.54094151212553 10.670470756062766Q74.8262482168331 8.827389443651924 77.22710413694722 7.760342368045647Q79.62796005706134 6.69329529243937 82.87760342368045 6.69329529243937Q87.6793152639087 6.69329529243937 90.54094151212553 9.094151212553493Q93.40256776034236 11.495007132667617 93.69358059914408 15.569186875891582H87.19429386590585Q87.04878744650499 13.968616262482168 85.860485021398 13.022824536376604Q84.67218259629101 12.077032810271039 82.68359486447932 12.077032810271039Q80.84051355206847 12.077032810271039 79.84621968616263 12.756062767475033Q78.85192582025678 13.435092724679027 78.85192582025678 14.647646219686163Q78.85192582025678 16.00570613409415 80.20998573466477 16.708987161198287Q81.56804564907276 17.412268188302424 84.42967189728958 18.139800285306706Q87.33980028530671 18.867332382310984 89.23138373751783 19.643366619115547Q91.12296718972895 20.419400855920113 92.50527817403709 22.044222539229672Q93.88758915834522 23.669044222539227 93.9360912981455 26.33666191155492Q93.9360912981455 28.664764621968615 92.65078459343795 30.507845934379457Q91.36547788873038 32.3509272467903 88.96462196861626 33.39372325249643Q86.56376604850215 34.436519258202566 83.36262482168331 34.436519258202566Q80.06447931526391 34.436519258202566 77.4453637660485 33.248216833095576Q74.8262482168331 32.059914407988586 73.2984308131241 30.022824536376604Q71.77061340941512 27.98573466476462 71.62510699001426 25.512125534950073ZM99.38630527817405 -0.04850213980028428Q99.38630527817405 -1.7460770328102768 100.57460770328103 -2.885877318116979Q101.76291012838803 -4.025677603423681 103.55748930099858 -4.025677603423681Q105.35206847360914 -4.025677603423681 106.54037089871613 -2.885877318116979Q107.72867332382312 -1.7460770328102768 107.72867332382312 -0.04850213980028428Q107.72867332382312 1.6490727532097011 106.54037089871613 2.788873038516405Q105.35206847360914 3.9286733238231086 103.55748930099858 3.9286733238231086Q101.76291012838803 3.9286733238231086 100.57460770328103 2.788873038516405Q99.38630527817405 1.6490727532097011 99.38630527817405 -0.04850213980028428ZM106.90413694721828 7.129814550641939V34.0H100.11383737517832V7.129814550641939ZM112.49985734664766 20.56490727532097Q112.49985734664766 16.442225392296717 114.31868758915836 13.289586305278172Q116.13751783166906 10.136947218259628 119.29015691868761 8.415121255349499Q122.44279600570616 6.69329529243937 126.32296718972898 6.69329529243937Q130.2031383737518 6.69329529243937 133.35577746077035 8.415121255349499Q136.5084165477889 10.136947218259628 138.3272467902996 13.289586305278172Q140.1460770328103 16.442225392296717 140.1460770328103 20.56490727532097Q140.1460770328103 24.68758915834522 138.2787446504993 27.840228245363765Q136.41141226818831 30.99286733238231 133.23452211126963 32.714693295292435Q130.05763195435094 34.436519258202566 126.12895863052783 34.436519258202566Q122.24878744650502 34.436519258202566 119.14465049928675 32.714693295292435Q116.04051355206849 30.99286733238231 114.27018544935808 27.840228245363765Q112.49985734664766 24.68758915834522 112.49985734664766 20.56490727532097ZM133.16176890156922 20.56490727532097Q133.16176890156922 16.73323823109843 131.14893009985735 14.671897289586305Q129.13609129814552 12.61055634807418 126.2259629101284 12.61055634807418Q123.31583452211129 12.61055634807418 121.35149786019974 14.671897289586305Q119.38716119828818 16.73323823109843 119.38716119828818 20.56490727532097Q119.38716119828818 24.39657631954351 121.30299572039945 26.457917261055634Q123.21883024251072 28.51925820256776 126.12895863052783 28.51925820256776Q127.97203994293868 28.51925820256776 129.59686162624823 27.621968616262482Q131.2216833095578 26.724679029957205 132.1917261055635 24.930099857346647Q133.16176890156922 23.13552068473609 133.16176890156922 20.56490727532097ZM171.35092724679032 18.236804564907274V34.0H164.56062767475038V19.158345221112697Q164.56062767475038 15.957203994293863 162.96005706134096 14.235378031383735Q161.35948644793154 12.513552068473608 158.5948644793153 12.513552068473608Q155.78174037089875 12.513552068473608 154.15691868758918 14.235378031383735Q152.53209700427962 15.957203994293863 152.53209700427962 19.158345221112697V34.0H145.74179743223968V7.129814550641939H152.53209700427962V10.476462196861625Q153.8901569186876 8.730385164051352 156.00000000000003 7.736091298145505Q158.10984308131245 6.741797432239657 160.6319543509273 6.741797432239657Q165.4336661911555 6.741797432239657 168.39229671897291 9.773181169757489Q171.35092724679032 12.80456490727532 171.35092724679032 18.236804564907274Z" transform="translate(112.00 30.00)" fill="#10263d"/>
+      </svg>
+    </a>
+    <nav class="links" aria-label="Explore">
+      <a href="#benches">Benches</a>
+      <a href="#controls">Controls</a>
+      <a href="#records">Records</a>
+      <a href="#guides">Guides</a>
+    </nav>
+    <div class="spacer"></div>
+    <nav class="links" aria-label="Site">
+      <a href="#share">Share</a>
+      <a href="#about">About</a>
+      <a href="#faqs">FAQs</a>
+    </nav>
+    <form class="search" role="search" onsubmit="return false">
+      <input type="search" placeholder="Search Nasion" aria-label="Search Nasion">
+    </form>
+  </div>
+</header>
+
+<div class="hero">
+  <svg class="trace" viewBox="0 0 1200 400" preserveAspectRatio="none" aria-hidden="true">
+    <g fill="none" stroke="#ffffff" stroke-width="1.4">
+      <path d="M0 70 l40 -6 l30 12 l25 -20 l30 26 l35 -14 l30 8 l40 -18 l30 22 l35 -10 l30 6 l40 -16 l30 20 l35 -12 l30 10 l40 -22 l30 24 l35 -8 l30 4 l40 -14 l30 18 l35 -16 l30 12 l40 -8 l30 10 l35 -18 l30 20 l40 -10 l30 6 l35 -12 l30 14 l40 -8 l30 4 l35 -10 l30 12"/>
+      <path d="M0 150 l35 10 l30 -18 l40 14 l25 -8 l35 20 l30 -24 l40 12 l30 -6 l35 16 l30 -20 l40 10 l30 -4 l35 14 l30 -18 l40 22 l30 -12 l35 6 l30 -14 l40 18 l30 -10 l35 8 l30 -16 l40 20 l30 -8 l35 4 l30 -12 l40 16 l30 -10 l35 12 l30 -18 l40 14 l30 -6 l35 8"/>
+      <path d="M0 235 l30 -12 l35 16 l30 -8 l40 20 l30 -26 l35 14 l30 -6 l40 12 l30 -18 l35 22 l30 -10 l40 4 l30 -14 l35 20 l30 -12 l40 8 l30 -16 l35 18 l30 -6 l40 10 l30 -20 l35 16 l30 -8 l40 12 l30 -14 l35 18 l30 -10 l40 6 l30 -12 l35 14 l30 -8 l40 10 l30 -6"/>
+      <path d="M0 320 l40 8 l30 -14 l35 18 l30 -10 l40 6 l30 -16 l35 22 l30 -12 l40 10 l30 -18 l35 14 l30 -6 l40 12 l30 -20 l35 18 l30 -8 l40 4 l30 -12 l35 16 l30 -10 l40 14 l30 -18 l35 12 l30 -6 l40 10 l30 -14 l35 16 l30 -8 l40 6 l30 -10 l35 12 l30 -4 l40 8"/>
+    </g>
+  </svg>
+  <div class="wrap">
+    <h1>The Reference Bench for Brain Signal Software</h1>
+    <p>Test, compare, and verify EEG tools on open recordings.</p>
+    <div class="btns">
+      <a class="btn primary" href="#benches">Run a Bench</a>
+      <a class="btn ghost" href="#records">Browse Records</a>
+    </div>
+  </div>
+</div>
+
+<section id="notes">
+  <div class="wrap">
+    <div class="head"><h2>Project Notes</h2></div>
+    <div class="grid">
+      <article class="card">
+        <div class="date">Nov. 13, 2026</div>
+        <h3>Preview page published</h3>
+        <p>This page shows what Nasion is meant to become. No software is available yet.</p>
+      </article>
+      <article class="card">
+        <div class="tags"><span class="tag state">Planned</span></div>
+        <h3>First bench</h3>
+        <p>The first bench is not chosen yet. Every bench will run its control signals beside every score.</p>
+      </article>
+      <article class="card">
+        <div class="tags"><span class="tag state">Planned</span></div>
+        <h3>Signed records</h3>
+        <p>Anyone will be able to check a result without trusting the person who ran it.</p>
+      </article>
+    </div>
+  </div>
+</section>
+
+<section class="alt" id="benches">
+  <div class="wrap">
+    <div class="head">
+      <h2>Featured Resources</h2>
+      <a class="more" href="#records">More Resources</a>
+    </div>
+    <div class="grid">
+      <article class="card" id="controls">
+        <div class="tags"><span class="tag">Control</span><span class="tag access">Open Access</span><span class="tag state">Sample</span></div>
+        <h3>Control Signals</h3>
+        <p>Signals with no brain behind them, such as noise and muscle activity. A score that shows up here too tells you little about the mind.</p>
+        <details>
+          <summary>Technical details</summary>
+          <p>The planned set includes phase-randomized surrogates, pink noise, recorded eye and muscle artifacts, and shuffled labels.</p>
+        </details>
+      </article>
+      <article class="card">
+        <div class="tags"><span class="tag">Bench</span><span class="tag access">Open Access</span><span class="tag state">Sample</span></div>
+        <h3>Motor Imagery Bench</h3>
+        <p>Checks how well a tool tells an imagined left hand movement from an imagined right hand movement. Built on a public recording set from 109 volunteers.</p>
+        <details>
+          <summary>Technical details</summary>
+          <p>Source is the EEG Motor Movement/Imagery Dataset on PhysioNet, with over 1500 one-minute and two-minute recordings at 64 channels and 160 samples per second in EDF+ format. Both classes come from the same imagery runs, so recording blocks never separate them.</p>
+        </details>
+      </article>
+      <article class="card">
+        <div class="tags"><span class="tag">Record</span><span class="tag access">Open Access</span><span class="tag state">Sample</span></div>
+        <h3>Signed Result Records</h3>
+        <p>Every result carries proof of which recording and which tool version produced it. Anyone can repeat the run and compare.</p>
+        <details>
+          <summary>Technical details</summary>
+          <p>Each record stores a hash of the input, the tool version, and a signature over both. The algorithms are not chosen yet.</p>
+        </details>
+      </article>
+    </div>
+  </div>
+</section>
+
+<section id="records">
+  <div class="wrap">
+    <div class="head">
+      <h2>Latest Resources</h2>
+      <a class="more" href="#records">More Resources</a>
+    </div>
+    <div class="grid">
+      <article class="card">
+        <div class="tags"><span class="tag">Bench</span><span class="tag access">Open Access</span><span class="tag state">Sample</span></div>
+        <h3>Resting Baseline Bench</h3>
+        <p>Compares eyes open with eyes closed, one of the oldest known effects in EEG. A tool that misses it needs a second look.</p>
+        <details>
+          <summary>Technical details</summary>
+          <p>Uses the two one-minute baseline runs in the same PhysioNet set. The expected result is stronger alpha activity, near 10 Hz, over the back of the head with eyes closed.</p>
+        </details>
+      </article>
+      <article class="card">
+        <div class="tags"><span class="tag">Control</span><span class="tag access">Open Access</span><span class="tag state">Sample</span></div>
+        <h3>Shuffled Label Control</h3>
+        <p>Runs the same test after mixing up which moment belongs to which task. Scores should fall to chance.</p>
+        <details>
+          <summary>Technical details</summary>
+          <p>Labels are permuted to build a null distribution. How labels are permuted, and how many times, depends on the bench and is not fixed yet.</p>
+        </details>
+      </article>
+      <article class="card" id="guides">
+        <div class="tags"><span class="tag">Record</span><span class="tag access">Open Access</span><span class="tag state">Sample</span></div>
+        <h3>Bench Report Format</h3>
+        <p>One page per run that puts the score next to its control scores. The signature travels with it.</p>
+        <details>
+          <summary>Technical details</summary>
+          <p>Reports are meant to be readable without Nasion installed. The file format is not chosen yet.</p>
+        </details>
+      </article>
+    </div>
+  </div>
+</section>
+
+<section class="alt" id="about">
+  <div class="wrap about">
+    <svg viewBox="0 0 250 150" role="img" aria-label="Side view of a head with the nasion marked at the front">
+      <path d="M150 128 C120 140, 70 138, 50 112 C24 78, 44 22, 104 18 C150 15, 182 46, 178 84 L190 100 L176 106 L174 122 C172 130, 162 130, 150 128 Z" fill="#eef5fd" stroke="#10263d" stroke-width="2.2" stroke-linejoin="round"/>
+      <path d="M52 108 C30 60, 70 18, 110 20 C150 20, 176 50, 177 80" fill="none" stroke="#1b5fae" stroke-width="2" stroke-dasharray="5 5"/>
+      <circle cx="177" cy="82" r="6" fill="#1b5fae"/>
+      <circle cx="52" cy="108" r="5" fill="#10263d"/>
+      <text x="186" y="74" font-size="13" font-family="-apple-system, Segoe UI, Arial, sans-serif" fill="#10263d">nasion</text>
+    </svg>
+    <div>
+      <div class="head"><h2>About the Name</h2></div>
+      <p>The nasion is the dip at the top of the nose, one of the fixed points on the head from which EEG electrode positions are measured. This project gives brain signal software the same kind of fixed starting point.</p>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap cols">
+    <div>
+      <h4>Navigation</h4>
+      <ul>
+        <li><a href="#records">Browse Records</a></li>
+        <li><a href="#share" id="share">Share a Bench</a></li>
+        <li><a href="#about">About</a></li>
+        <li><a href="#notes">Notes</a></li>
+      </ul>
+    </div>
+    <div>
+      <h4>Explore</h4>
+      <ul>
+        <li><a href="#benches">Benches</a></li>
+        <li><a href="#controls">Controls</a></li>
+        <li><a href="#records">Records</a></li>
+        <li><a href="#guides">Guides</a></li>
+      </ul>
+    </div>
+    <div id="faqs">
+      <h4>Nasion</h4>
+      <p>An independent project for testing brain signal software.</p>
+      <p>Source recordings stay under the licenses of the public archives that host them.</p>
+      <p>Nasion is a research tool for testing EEG analysis software. It is not intended to diagnose or treat any condition, and every claim states its measured accuracy, data and date.</p>
+      <p><a href="#">Accessibility</a></p>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>
