@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Nasion: The Reference Bench for Brain Signal Software</title>
-<meta name="description" content="Test, compare, and verify EEG tools on open recordings.">
+<title>Nasion: Put Brain Signal Software to the Test</title>
+<meta name="description" content="Find out whether brain signal software is reading the brain or something else.">
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2064%2064%22%20width%3D%2264%22%20height%3D%2264%22%20role%3D%22img%22%20aria-label%3D%22Nasion%22%3E%20%20%20%3Ctitle%3ENasion%3C%2Ftitle%3E%20%20%20%3Crect%20width%3D%2264%22%20height%3D%2264%22%20rx%3D%2212%22%20fill%3D%22%2310263d%22%2F%3E%20%20%20%3Cpath%20d%3D%22M13%2043%20A19%2019%200%200%201%2051%2043%22%20fill%3D%22none%22%20stroke%3D%22%23ffffff%22%20stroke-width%3D%226%22%20stroke-linecap%3D%22round%22%2F%3E%20%20%20%3Ccircle%20cx%3D%2251%22%20cy%3D%2243%22%20r%3D%228.5%22%20fill%3D%22%237fb2ee%22%2F%3E%20%3C%2Fsvg%3E%20">
 <style>
   :root {
@@ -125,9 +125,9 @@
       </svg>
     </a>
     <nav class="links" aria-label="Explore">
-      <a href="#benches">Benches</a>
-      <a href="#controls">Controls</a>
-      <a href="#records">Records</a>
+      <a href="#benches">Tests</a>
+      <a href="#controls">Reality Checks</a>
+      <a href="#records">Results</a>
       <a href="#guides">Guides</a>
     </nav>
     <div class="spacer"></div>
@@ -152,11 +152,11 @@
     </g>
   </svg>
   <div class="wrap">
-    <h1>The Reference Bench for Brain Signal Software</h1>
-    <p>Test, compare, and verify EEG tools on open recordings.</p>
+    <h1>Put Brain Signal Software to the Test</h1>
+    <p>Find out whether a tool is reading the brain or something else, on public recordings anyone can check.</p>
     <div class="btns">
-      <a class="btn primary" href="#benches">Run a Bench</a>
-      <a class="btn ghost" href="#records">Browse Records</a>
+      <a class="btn primary" href="#benches">Run a Test</a>
+      <a class="btn ghost" href="#records">Browse Results</a>
     </div>
   </div>
 </div>
@@ -172,13 +172,13 @@
       </article>
       <article class="card">
         <div class="tags"><span class="tag state">Planned</span></div>
-        <h3>First bench</h3>
-        <p>The first bench is the resting baseline bench. Every bench will run its control signals beside every score.</p>
+        <h3>First test</h3>
+        <p>We start with the simplest one there is: eyes open versus eyes closed. Every result will come with its own reality checks.</p>
       </article>
       <article class="card">
         <div class="tags"><span class="tag state">Planned</span></div>
-        <h3>Signed records</h3>
-        <p>Anyone will be able to re-run a result and compare it with the signed record.</p>
+        <h3>Sealed results</h3>
+        <p>Anyone will be able to run the same test again and see if they get the same answer.</p>
       </article>
     </div>
   </div>
@@ -192,27 +192,27 @@
     </div>
     <div class="grid">
       <article class="card" id="controls">
-        <div class="tags"><span class="tag">Control</span><span class="tag access">Open Access</span><span class="tag state">Sample</span></div>
-        <h3>Control Signals</h3>
-        <p>These are signals with no brain behind them, plus real recordings with eye and muscle artifacts mixed in. A score that also appears on noise, or grows when artifacts are added, tells you little about the mind.</p>
+        <div class="tags"><span class="tag">Check</span><span class="tag access">Open Access</span><span class="tag state">Sample</span></div>
+        <h3>Reality Checks</h3>
+        <p>We also run every tool on fake signals with no brain in them, and on real recordings with blinks and muscle twitches added. If the score holds up on noise, or climbs when blinks are added, it may not come from the brain at all.</p>
         <details>
           <summary>Technical details</summary>
           <p>The planned set includes phase-randomized surrogates, pink noise and shuffled labels, plus recorded eye and muscle artifacts added to real data.</p>
         </details>
       </article>
       <article class="card">
-        <div class="tags"><span class="tag">Bench</span><span class="tag access">Open Access</span><span class="tag state">Sample</span></div>
-        <h3>Motor Imagery Bench</h3>
-        <p>Checks how well a tool tells an imagined left hand movement from an imagined right hand movement. Built on a public recording set from 109 volunteers.</p>
+        <div class="tags"><span class="tag">Test</span><span class="tag access">Open Access</span><span class="tag state">Sample</span></div>
+        <h3>Imagined Movement</h3>
+        <p>Checks whether a tool can tell someone imagining a left-hand movement from someone imagining a right-hand one, using public recordings from 109 volunteers.</p>
         <details>
           <summary>Technical details</summary>
           <p>Source is the EEG Motor Movement/Imagery Dataset on PhysioNet, with over 1500 one-minute and two-minute recordings at 64 channels and 160 samples per second in EDF+ format. Both classes come from the same imagery runs, so recording blocks never separate them.</p>
         </details>
       </article>
       <article class="card">
-        <div class="tags"><span class="tag">Record</span><span class="tag access">Open Access</span><span class="tag state">Sample</span></div>
-        <h3>Signed Result Records</h3>
-        <p>Every result names the recording and the tool version it came from, under a signature that shows nothing changed afterwards. Anyone can repeat the run and compare.</p>
+        <div class="tags"><span class="tag">Result</span><span class="tag access">Open Access</span><span class="tag state">Sample</span></div>
+        <h3>Sealed Results</h3>
+        <p>Every result is sealed together with the exact recording and software version behind it. If anyone changes a number later, the seal breaks.</p>
         <details>
           <summary>Technical details</summary>
           <p>Each record stores a SHA-256 hash of the input, the tool version, and an Ed25519 signature over both.</p>
@@ -230,27 +230,27 @@
     </div>
     <div class="grid">
       <article class="card">
-        <div class="tags"><span class="tag">Bench</span><span class="tag access">Open Access</span><span class="tag state">Sample</span></div>
-        <h3>Resting Baseline Bench</h3>
-        <p>Compares eyes open with eyes closed, one of the oldest known effects in EEG. A tool that misses it needs a second look.</p>
+        <div class="tags"><span class="tag">Test</span><span class="tag access">Open Access</span><span class="tag state">Sample</span></div>
+        <h3>Eyes Open, Eyes Closed</h3>
+        <p>Closing your eyes changes your brain waves in a way scientists have known about since 1929. A tool that misses it needs a second look.</p>
         <details>
           <summary>Technical details</summary>
           <p>Uses the two one-minute baseline runs in the same PhysioNet set. The expected result is stronger alpha activity, near 10 Hz, over the back of the head with eyes closed.</p>
         </details>
       </article>
       <article class="card">
-        <div class="tags"><span class="tag">Control</span><span class="tag access">Open Access</span><span class="tag state">Sample</span></div>
-        <h3>Shuffled Label Control</h3>
-        <p>Runs the same test after mixing up which moment belongs to which task. Scores should fall to chance.</p>
+        <div class="tags"><span class="tag">Check</span><span class="tag access">Open Access</span><span class="tag state">Sample</span></div>
+        <h3>Shuffled Answers</h3>
+        <p>We scramble which moment belongs to which task and run the test again. A good tool should drop to guessing.</p>
         <details>
           <summary>Technical details</summary>
           <p>Labels are permuted to build a null distribution. How labels are permuted, and how many times, depends on the bench and is not fixed yet.</p>
         </details>
       </article>
       <article class="card" id="guides">
-        <div class="tags"><span class="tag">Record</span><span class="tag access">Open Access</span><span class="tag state">Sample</span></div>
-        <h3>Bench Report Format</h3>
-        <p>One page per run that puts the score next to its control scores. The signature travels with it.</p>
+        <div class="tags"><span class="tag">Result</span><span class="tag access">Open Access</span><span class="tag state">Sample</span></div>
+        <h3>One-Page Reports</h3>
+        <p>Each run produces one page that puts the score next to its reality checks. Anyone can open it without special software.</p>
         <details>
           <summary>Technical details</summary>
           <p>Reports are canonical JSON (RFC 8785), so they can be read without Nasion installed.</p>
@@ -271,7 +271,7 @@
     </svg>
     <div>
       <div class="head"><h2>About the Name</h2></div>
-      <p>The nasion is the dip at the top of the nose, one of the fixed points on the head from which EEG electrode positions are measured. This project gives brain signal software the same kind of fixed starting point.</p>
+      <p>The nasion is the dip at the top of the nose, one of the fixed points on the head from which EEG electrode positions are measured. Nasion gives brain signal software the same kind of fixed starting point.</p>
     </div>
   </div>
 </section>
@@ -281,8 +281,8 @@
     <div>
       <h4>Navigation</h4>
       <ul>
-        <li><a href="#records">Browse Records</a></li>
-        <li><a href="#share" id="share">Share a Bench</a></li>
+        <li><a href="#records">Browse Results</a></li>
+        <li><a href="#share" id="share">Share a Test</a></li>
         <li><a href="#about">About</a></li>
         <li><a href="#notes">Notes</a></li>
       </ul>
@@ -290,15 +290,15 @@
     <div>
       <h4>Explore</h4>
       <ul>
-        <li><a href="#benches">Benches</a></li>
-        <li><a href="#controls">Controls</a></li>
-        <li><a href="#records">Records</a></li>
+        <li><a href="#benches">Tests</a></li>
+        <li><a href="#controls">Reality Checks</a></li>
+        <li><a href="#records">Results</a></li>
         <li><a href="#guides">Guides</a></li>
       </ul>
     </div>
     <div id="faqs">
       <h4>Nasion</h4>
-      <p>An independent open source project for testing brain signal software, licensed under Apache-2.0 or MIT.</p>
+      <p>An independent, free and open source project for testing brain signal software.</p>
       <p>Source recordings stay under the licenses of the public archives that host them.</p>
       <p>Nasion is a research tool for testing EEG analysis software. It is not intended to diagnose or treat any condition, and every claim states its measured accuracy, data and date.</p>
       <p><a href="#">Accessibility</a></p>
