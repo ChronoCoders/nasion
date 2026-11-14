@@ -122,22 +122,63 @@ for package in json.load(sys.stdin)["packages"]:
         print(package["manifest_path"], "does not set [lints] workspace = true")
 '
 
+# Prints one line for each Cargo.toml on disk that is neither the workspace
+# root manifest nor the manifest of a workspace member, read from cargo metadata
+# on stdin. target/ and .venv/ hold build output and .git/ holds no sources, so
+# all three are skipped at the root. Exits 0 clean, 1 stray found, 2 failed.
+STRAY_MANIFESTS_PY='
+import json, os, sys
+
+SKIPPED = {"target", ".venv", ".git"}
+
+# os.walk silently skips a directory it cannot read unless onerror raises.
+def raise_error(error):
+    raise error
+
+try:
+    metadata = json.load(sys.stdin)
+    root = metadata["workspace_root"]
+    known = {os.path.join(root, "Cargo.toml")}
+    known.update(package["manifest_path"] for package in metadata["packages"])
+    stray = []
+    for directory, subdirectories, files in os.walk(root, onerror=raise_error):
+        if directory == root:
+            subdirectories[:] = [d for d in subdirectories if d not in SKIPPED]
+        manifest = os.path.join(directory, "Cargo.toml")
+        if "Cargo.toml" in files and manifest not in known:
+            stray.append(manifest)
+except (OSError, KeyError, TypeError, ValueError) as error:
+    print("Listing Cargo.toml files or reading cargo metadata failed:", error)
+    sys.exit(2)
+for manifest in sorted(stray):
+    print(manifest, "is not the manifest of a workspace member")
+sys.exit(1 if stray else 0)
+'
+
 # Every target root of every workspace member must hold a crate-level
 # #![deny(unsafe_code)], and every member must inherit [workspace.lints].
 # check_unsafe_allow only sees opt-outs, so a crate that never denied unsafe
 # code is invisible to it. nasion-xtask checks the attribute by parsing each
 # target root, so text in a comment or a string never counts. Members and
-# targets come from cargo metadata, never from a fixed list.
+# targets come from cargo metadata, never from a fixed list, and every
+# Cargo.toml on disk must belong to a member so none escapes that list.
 check_deny_unsafe() {
-    local meta missing status
+    local meta missing stray status
     if ! meta=$(cargo metadata --no-deps --format-version 1); then
-        echo "cargo metadata failed. Check that every Cargo.toml in the workspace parses."
+        echo "cargo metadata failed. Check that every Cargo.toml in the workspace parses and that every directory under crates/ holds a Cargo.toml."
         return 2
     fi
     if ! missing=$(python3 -I -c "$LINTS_INHERIT_PY" <<<"$meta"); then
         echo "Reading cargo metadata or a member Cargo.toml failed. Check the output above."
         return 2
     fi
+    stray=$(python3 -I -c "$STRAY_MANIFESTS_PY" <<<"$meta")
+    status=$?
+    if ((status > 1)); then
+        echo "$stray"
+        return 2
+    fi
+    missing+=${stray:+${missing:+$'\n'}$stray}
     cargo run --locked --quiet -p nasion-xtask
     status=$?
     if ((status > 1)); then
