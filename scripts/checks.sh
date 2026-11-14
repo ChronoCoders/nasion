@@ -111,6 +111,86 @@ check_unsafe_allow() {
     echo "note: no unsafe"
 }
 
+# Prints one line per workspace member and one per target, read from cargo
+# metadata on stdin: "member<TAB>yes|no<TAB>manifest" where yes means the
+# manifest sets [lints] workspace = true, and "target<TAB>package<TAB>src_path".
+DENY_UNSAFE_PY='
+import json, sys, tomllib
+for package in json.load(sys.stdin)["packages"]:
+    with open(package["manifest_path"], "rb") as manifest:
+        lints = tomllib.load(manifest).get("lints", {})
+    inherits = isinstance(lints, dict) and lints.get("workspace") is True
+    print("member", "yes" if inherits else "no", package["manifest_path"], sep="\t")
+    for target in package["targets"]:
+        print("target", package["name"], target["src_path"], sep="\t")
+'
+
+# Every target root of every workspace member must hold #![deny(unsafe_code)],
+# and every member must inherit [workspace.lints]. check_unsafe_allow only sees
+# opt-outs, so a crate that never denied unsafe code is invisible to it. Targets
+# come from cargo metadata, never from a fixed list. Line comments are removed
+# and whitespace is dropped before matching, so a commented-out attribute does
+# not count and one split over lines does.
+check_deny_unsafe() {
+    local meta records kind field path src targets=0 found=0
+    if ! meta=$(cargo metadata --no-deps --format-version 1); then
+        echo "cargo metadata failed. Check that every Cargo.toml in the workspace parses."
+        return 2
+    fi
+    if ! records=$(python3 -I -c "$DENY_UNSAFE_PY" <<<"$meta"); then
+        echo "Reading cargo metadata or a member Cargo.toml failed. Check the output above."
+        return 2
+    fi
+    while IFS=$'\t' read -r kind field path; do
+        case $kind in
+            member)
+                if [[ $field != yes ]]; then
+                    echo "$path does not set [lints] workspace = true"
+                    found=1
+                fi
+                ;;
+            target)
+                targets=$((targets + 1))
+                if ! src=$(<"$path"); then
+                    echo "$path is a target of $field but cannot be read."
+                    return 2
+                fi
+                src=$(awk '{ sub(/\/\/.*/, ""); print }' <<<"$src")
+                src=${src//[[:space:]]/}
+                if [[ $src != *'#![deny(unsafe_code)]'* ]]; then
+                    echo "$path (target of $field) lacks #![deny(unsafe_code)]"
+                    found=1
+                fi
+                ;;
+        esac
+    done <<<"$records"
+    if ((targets == 0)); then
+        echo "cargo metadata listed no targets. Check the workspace members in Cargo.toml."
+        return 2
+    fi
+    if ((found)); then
+        return 1
+    fi
+    echo "note: $targets targets"
+}
+
+# Runs a cargo command and also fails when cargo warns that a member does not
+# inherit [workspace.lints]. cargo prints that as a plain warning, which
+# -D warnings does not turn into an error.
+check_cargo_lints_warning() {
+    local output status
+    output=$("$@" 2>&1)
+    status=$?
+    echo "$output"
+    LC_ALL=C grep -F "missing \`[lints]\` to inherit \`[workspace.lints]\`" <<<"$output" >/dev/null
+    search_result $? "search for the cargo [lints] warning" || {
+        local search=$?
+        ((search == 1)) && echo "A member does not inherit [workspace.lints]. Add [lints] workspace = true to its Cargo.toml."
+        return "$search"
+    }
+    return "$status"
+}
+
 # The dataset manifest does not exist yet, so neither does its hash check. A
 # manifest that appears before the check is written fails the gate.
 check_manifest() {

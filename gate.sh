@@ -69,9 +69,10 @@ banned_names() {
 }
 
 step "cargo fmt" cargo fmt --all --check
-step "cargo clippy" cargo clippy --workspace --all-targets --all-features -- -D warnings
+step "cargo clippy" check_cargo_lints_warning cargo clippy --workspace --all-targets --all-features -- -D warnings
 step "cargo test" cargo test --workspace
 step "miri" check_unsafe_allow
+step "deny unsafe" check_deny_unsafe
 step "cargo audit" cargo audit --deny warnings
 step "ruff check" venv_tool ruff check python
 step "ruff format" venv_tool ruff format --check python
