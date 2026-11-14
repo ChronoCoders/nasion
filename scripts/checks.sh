@@ -88,33 +88,86 @@ check_instruction_paths() {
 # Forbidding unsafe_code on the command line turns every opt-out into a compile
 # error wherever it comes from: an untracked file, a #[path] module or a macro.
 # Registry dependencies build with --cap-lints, so the forbid reaches only
-# workspace members and path dependencies. A separate target directory keeps
-# the normal build cache intact. Returns 2 when cargo fails for another reason.
+# workspace members and path dependencies. Code under cfg(windows) or
+# cfg(unix) compiles only for its own target, so the check runs once for each
+# platform D23 ships, each in its own target directory. The host run passes no
+# --target, because with --target cargo does not pass RUSTFLAGS to build
+# scripts and proc macros. Returns 2 when the host is not the Linux target, a
+# target is not installed or cargo fails for another reason.
+HOST_TARGET=x86_64-unknown-linux-gnu
+CROSS_TARGETS=(x86_64-pc-windows-msvc)
+
+# Prints the lowest Python version allowed by requires-python in
+# pyproject.toml. PyO3 needs it when it cannot run the target's interpreter.
+MIN_PYTHON_PY='
+import re, sys, tomllib
+try:
+    with open("pyproject.toml", "rb") as pyproject:
+        requires = tomllib.load(pyproject)["project"]["requires-python"]
+except (OSError, KeyError, TypeError, ValueError) as error:
+    print("Reading requires-python from pyproject.toml failed:", error)
+    sys.exit(2)
+match = re.fullmatch(r">=\s*(3\.\d+)", requires)
+if match is None:
+    print("requires-python in pyproject.toml is", repr(requires) + ", expected the form >=3.N")
+    sys.exit(2)
+print(match.group(1))
+'
+
 check_unsafe_allow() {
-    local output status
-    output=$(RUSTFLAGS="-F unsafe_code" CARGO_TARGET_DIR=target/forbid-check \
-        cargo check --locked --workspace --all-targets --all-features 2>&1)
-    status=$?
-    if ((status == 0)); then
+    local host sysroot python target output status worst=0 failed=()
+    if ! host=$(rustc -vV | sed -n 's/^host: //p') || ! sysroot=$(rustc --print sysroot); then
+        echo "rustc -vV or rustc --print sysroot failed. Check that the toolchain in rust-toolchain.toml is installed."
+        return 2
+    fi
+    if [[ $host != "$HOST_TARGET" ]]; then
+        echo "rustc reports host '$host'. The gate runs on $HOST_TARGET, so the host check would not cover that target."
+        return 2
+    fi
+    for target in "${CROSS_TARGETS[@]}"; do
+        if [[ ! -d $sysroot/lib/rustlib/$target/lib ]]; then
+            echo "The standard library for $target is not installed in $sysroot. Run rustup target add $target."
+            return 2
+        fi
+    done
+    if ! python=$(python3 -I -c "$MIN_PYTHON_PY"); then
+        echo "$python"
+        return 2
+    fi
+    for target in "$HOST_TARGET" "${CROSS_TARGETS[@]}"; do
+        local target_args=()
+        [[ $target != "$HOST_TARGET" ]] && target_args=(--target "$target")
+        output=$(PYO3_CROSS_PYTHON_VERSION=$python RUSTFLAGS="-F unsafe_code" \
+            CARGO_TARGET_DIR="target/forbid-check-$target" \
+            cargo check --locked --workspace --all-targets --all-features "${target_args[@]}" 2>&1)
+        status=$?
+        ((status == 0)) && continue
+        echo "$output"
+        LC_ALL=C grep -q -F 'unsafe_code' <<<"$output"
+        case $? in
+            0)
+                echo "Unsafe code compiles for $target."
+                failed+=("$target")
+                worst=$((worst > 1 ? worst : 1))
+                ;;
+            1)
+                echo "cargo check for $target failed (exit $status) for a reason other than unsafe code. Fix the error above."
+                worst=2
+                ;;
+            *)
+                echo "Searching the cargo check output for $target for unsafe_code failed. Check that grep works."
+                worst=2
+                ;;
+        esac
+    done
+    if ((worst == 0)); then
         echo "note: no unsafe"
         return 0
     fi
-    echo "$output"
-    LC_ALL=C grep -q -F 'unsafe_code' <<<"$output"
-    case $? in
-        0)
-            echo "Miri is not set up. Record a decision that pins its nightly toolchain and add it to the gate."
-            return 1
-            ;;
-        1)
-            echo "cargo check failed (exit $status) for a reason other than unsafe code. Fix the error above."
-            return 2
-            ;;
-        *)
-            echo "Searching the cargo check output for unsafe_code failed. Check that grep works."
-            return 2
-            ;;
-    esac
+    if ((${#failed[@]} > 0)); then
+        echo "Miri is not set up. Record a decision that pins its nightly toolchain and add it to the gate."
+    fi
+    return "$worst"
 }
 
 # Prints one line for each workspace member whose Cargo.toml does not set
@@ -163,9 +216,11 @@ sys.exit(1 if stray else 0)
 
 # Every target root of every workspace member must hold a crate-level
 # #![deny(unsafe_code)], and every member must inherit [workspace.lints].
+# Build script and proc macro roots need forbid, and library roots also need
+# #![doc(test(attr(forbid(unsafe_code))))]. nasion-xtask lists the exact rules.
 # The command line forbid in check_unsafe_allow lasts only until Miri is set
-# up, so this check keeps the attribute itself in place as SPEC Section 11
-# requires. nasion-xtask checks the attribute by parsing each
+# up, so this check keeps the attributes themselves in place as SPEC Section 11
+# requires. nasion-xtask checks them by parsing each
 # target root, so text in a comment or a string never counts. Members and
 # targets come from cargo metadata, never from a fixed list, and every
 # Cargo.toml on disk must belong to a member so none escapes that list.
