@@ -1,0 +1,7 @@
+/target/
+/.venv/
+__pycache__/
+*.so
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/

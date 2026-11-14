@@ -1,0 +1,19 @@
+[workspace]
+resolver = "3"
+members = ["crates/nasion-core", "crates/nasion-cli", "crates/nasion-py"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.100"
+license = "Apache-2.0 OR MIT"
+repository = "https://github.com/ChronoCoders/nasion"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+print_stdout = "deny"
+print_stderr = "deny"

@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Checks the commit message. git runs this hook before it strips comments, so
+# comment lines and everything below the scissors line are removed first.
+set -uo pipefail
+source "$(git rev-parse --show-toplevel)/scripts/checks.sh" || exit 2
+
+msg=$(awk '/^# -+ >8 -+$/ { exit } /^#/ { next } { sub(/[ \t]+$/, ""); print }' "$1") || {
+    echo "commit-msg: could not read $1."
+    exit 2
+}
+
+failed=0
+check_msg_single_line "$msg" || failed=1
+check_msg_prefix "$msg" || failed=1
+check_msg_trailers "$msg" || failed=1
+check_msg_dashes "$msg" || failed=1
+check_msg_cleanup "$msg" || failed=1
+check_msg_banned "$msg" || failed=1
+((failed)) && echo "commit-msg: commit blocked. Fix the message and commit again."
+exit "$failed"

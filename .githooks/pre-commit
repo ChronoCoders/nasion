@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Runs the dash sweep, the instruction file check and the banned name check on
+# the staged files.
+set -uo pipefail
+source "$(git rev-parse --show-toplevel)/scripts/checks.sh" || exit 2
+
+export GIT_LITERAL_PATHSPECS=1
+staged=$(git -c core.quotePath=false diff --cached --name-only --diff-filter=ACMR) || {
+    echo "pre-commit: git diff --cached failed. Check the index."
+    exit 2
+}
+[[ -n $staged ]] || exit 0
+mapfile -t paths <<<"$staged"
+
+failed=0
+check_dashes --cached -- "${paths[@]}" || failed=1
+check_instruction_paths printf '%s\0' "${paths[@]}" || failed=1
+check_banned_content --cached -- "${paths[@]}" || failed=1
+check_banned_paths printf '%s\0' "${paths[@]}" || failed=1
+((failed)) && echo "pre-commit: commit blocked. Fix the lines above and stage again."
+exit "$failed"
