@@ -173,12 +173,12 @@
       <article class="card">
         <div class="tags"><span class="tag state">Planned</span></div>
         <h3>First bench</h3>
-        <p>The first bench is not chosen yet. Every bench will run its control signals beside every score.</p>
+        <p>The first bench is the resting baseline bench. Every bench will run its control signals beside every score.</p>
       </article>
       <article class="card">
         <div class="tags"><span class="tag state">Planned</span></div>
         <h3>Signed records</h3>
-        <p>Anyone will be able to check a result without trusting the person who ran it.</p>
+        <p>Anyone will be able to re-run a result and compare it with the signed record.</p>
       </article>
     </div>
   </div>
@@ -194,10 +194,10 @@
       <article class="card" id="controls">
         <div class="tags"><span class="tag">Control</span><span class="tag access">Open Access</span><span class="tag state">Sample</span></div>
         <h3>Control Signals</h3>
-        <p>Signals with no brain behind them, such as noise and muscle activity. A score that shows up here too tells you little about the mind.</p>
+        <p>These are signals with no brain behind them, plus real recordings with eye and muscle artifacts mixed in. A score that also appears on noise, or grows when artifacts are added, tells you little about the mind.</p>
         <details>
           <summary>Technical details</summary>
-          <p>The planned set includes phase-randomized surrogates, pink noise, recorded eye and muscle artifacts, and shuffled labels.</p>
+          <p>The planned set includes phase-randomized surrogates, pink noise and shuffled labels, plus recorded eye and muscle artifacts added to real data.</p>
         </details>
       </article>
       <article class="card">
@@ -212,10 +212,10 @@
       <article class="card">
         <div class="tags"><span class="tag">Record</span><span class="tag access">Open Access</span><span class="tag state">Sample</span></div>
         <h3>Signed Result Records</h3>
-        <p>Every result carries proof of which recording and which tool version produced it. Anyone can repeat the run and compare.</p>
+        <p>Every result names the recording and the tool version it came from, under a signature that shows nothing changed afterwards. Anyone can repeat the run and compare.</p>
         <details>
           <summary>Technical details</summary>
-          <p>Each record stores a hash of the input, the tool version, and a signature over both. The algorithms are not chosen yet.</p>
+          <p>Each record stores a SHA-256 hash of the input, the tool version, and an Ed25519 signature over both.</p>
         </details>
       </article>
     </div>
@@ -253,7 +253,7 @@
         <p>One page per run that puts the score next to its control scores. The signature travels with it.</p>
         <details>
           <summary>Technical details</summary>
-          <p>Reports are meant to be readable without Nasion installed. The file format is not chosen yet.</p>
+          <p>Reports are canonical JSON (RFC 8785), so they can be read without Nasion installed.</p>
         </details>
       </article>
     </div>
@@ -298,7 +298,7 @@
     </div>
     <div id="faqs">
       <h4>Nasion</h4>
-      <p>An independent project for testing brain signal software.</p>
+      <p>An independent open source project for testing brain signal software, licensed under Apache-2.0 or MIT.</p>
       <p>Source recordings stay under the licenses of the public archives that host them.</p>
       <p>Nasion is a research tool for testing EEG analysis software. It is not intended to diagnose or treat any condition, and every claim states its measured accuracy, data and date.</p>
       <p><a href="#">Accessibility</a></p>
