@@ -192,6 +192,70 @@ check_deny_unsafe() {
     return "$status"
 }
 
+# Records the work tree, or compares it with a recorded state on stdin. The
+# state is the output of git status --porcelain=v1 -z --untracked-files=all
+# plus a SHA-256 of every tracked file as it is on disk. Exits 0 unchanged,
+# 1 changed (naming each path), 2 when git fails or the state cannot be read.
+TREE_STATE_PY='
+import hashlib, json, os, subprocess, sys
+
+def git(*args):
+    result = subprocess.run(["git", *args], capture_output=True, check=False)
+    if result.returncode != 0:
+        detail = result.stderr.decode(errors="replace").strip()
+        raise RuntimeError("git " + " ".join(args) + " failed: " + detail)
+    return [entry.decode(errors="surrogateescape") for entry in result.stdout.split(b"\0") if entry]
+
+def content(path):
+    if os.path.islink(path):
+        return "link:" + os.readlink(path)
+    if os.path.isdir(path):
+        return "directory"
+    if not os.path.exists(path):
+        return "missing"
+    with open(path, "rb") as tracked_file:
+        return "sha256:" + hashlib.sha256(tracked_file.read()).hexdigest()
+
+def snapshot():
+    status = git("status", "--porcelain=v1", "-z", "--untracked-files=all")
+    tracked = git("ls-files", "-z")
+    return {"status": sorted(status), "content": {path: content(path) for path in tracked}}
+
+# A status record is "XY path". The source path of a rename comes as its own
+# record without the XY prefix.
+def status_path(record):
+    return record[3:] if record[2:3] == " " else record
+
+try:
+    if sys.argv[1] == "snapshot":
+        print(json.dumps(snapshot()))
+        sys.exit(0)
+    before = json.loads(sys.stdin.read())
+    after = snapshot()
+    changed = {status_path(r) for r in set(before["status"]) ^ set(after["status"])}
+    for path in before["content"].keys() | after["content"].keys():
+        if before["content"].get(path) != after["content"].get(path):
+            changed.add(path)
+except (OSError, RuntimeError, KeyError, TypeError, ValueError) as error:
+    print("Recording the work tree state failed:", error)
+    sys.exit(2)
+for path in sorted(changed):
+    print(path, "changed, appeared or disappeared while the gate ran")
+sys.exit(1 if changed else 0)
+'
+
+# The argument is the state recorded before the first gate step.
+check_tree_unchanged() {
+    local status
+    python3 -I -c "$TREE_STATE_PY" compare <<<"$1"
+    status=$?
+    if ((status > 2)); then
+        echo "python3 failed to compare the work tree state (exit $status)."
+        return 2
+    fi
+    return "$status"
+}
+
 # Runs a cargo command and also fails when cargo warns that a member does not
 # inherit [workspace.lints]. cargo prints that as a plain warning, which
 # -D warnings does not turn into an error.
