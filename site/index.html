@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Nasion: Put Brain Signal Software to the Test</title>
-<meta name="description" content="Find out whether brain signal software is reading the brain or something else.">
+<title>Nasion: We Check What Brain Signal Software Promises</title>
+<meta name="description" content="Brain signal software makes big promises. Nasion checks them against fake brain signals, added blinks and scrambled answers.">
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2064%2064%22%20width%3D%2264%22%20height%3D%2264%22%20role%3D%22img%22%20aria-label%3D%22Nasion%22%3E%20%20%20%3Ctitle%3ENasion%3C%2Ftitle%3E%20%20%20%3Crect%20width%3D%2264%22%20height%3D%2264%22%20rx%3D%2212%22%20fill%3D%22%2310263d%22%2F%3E%20%20%20%3Cpath%20d%3D%22M13%2043%20A19%2019%200%200%201%2051%2043%22%20fill%3D%22none%22%20stroke%3D%22%23ffffff%22%20stroke-width%3D%226%22%20stroke-linecap%3D%22round%22%2F%3E%20%20%20%3Ccircle%20cx%3D%2251%22%20cy%3D%2243%22%20r%3D%228.5%22%20fill%3D%22%237fb2ee%22%2F%3E%20%3C%2Fsvg%3E%20">
 <style>
   :root {
@@ -152,8 +152,8 @@
     </g>
   </svg>
   <div class="wrap">
-    <h1>Put Brain Signal Software to the Test</h1>
-    <p>Find out whether a tool is reading the brain or something else, on public recordings anyone can check.</p>
+    <h1>Brain Signal Software Makes Big Promises. Nasion Checks Them.</h1>
+    <p>Run any tool on public recordings and watch what happens when the brain is taken out.</p>
     <div class="btns">
       <a class="btn primary" href="#benches">Run a Test</a>
       <a class="btn ghost" href="#records">Browse Results</a>
@@ -168,17 +168,17 @@
       <article class="card">
         <div class="date">Nov. 13, 2026</div>
         <h3>Preview page published</h3>
-        <p>This page shows what Nasion is meant to become. No software is available yet.</p>
+        <p>This page shows where Nasion is headed. The software is not out yet.</p>
       </article>
       <article class="card">
         <div class="tags"><span class="tag state">Planned</span></div>
         <h3>First test</h3>
-        <p>We start with the simplest one there is: eyes open versus eyes closed. Every result will come with its own reality checks.</p>
+        <p>We open with the oldest effect in the book, the one Hans Berger found in 1929. Every result after that comes with its own reality checks.</p>
       </article>
       <article class="card">
         <div class="tags"><span class="tag state">Planned</span></div>
         <h3>Sealed results</h3>
-        <p>Anyone will be able to run the same test again and see if they get the same answer.</p>
+        <p>Run our test yourself and see whether you get the same answer. Nobody has to take our word for it.</p>
       </article>
     </div>
   </div>
@@ -194,7 +194,7 @@
       <article class="card" id="controls">
         <div class="tags"><span class="tag">Check</span><span class="tag access">Open Access</span><span class="tag state">Sample</span></div>
         <h3>Reality Checks</h3>
-        <p>We also run every tool on fake signals with no brain in them, and on real recordings with blinks and muscle twitches added. If the score holds up on noise, or climbs when blinks are added, it may not come from the brain at all.</p>
+        <p>We feed every tool fake brain signals, then add blinks and muscle twitches to real ones. A tool that still scores on the fakes is reading noise, and one that climbs with the blinks has learned to watch your eyes instead of your brain.</p>
         <details>
           <summary>Technical details</summary>
           <p>The planned set includes phase-randomized surrogates, pink noise and shuffled labels, plus recorded eye and muscle artifacts added to real data.</p>
@@ -203,7 +203,7 @@
       <article class="card">
         <div class="tags"><span class="tag">Test</span><span class="tag access">Open Access</span><span class="tag state">Sample</span></div>
         <h3>Imagined Movement</h3>
-        <p>Checks whether a tool can tell someone imagining a left-hand movement from someone imagining a right-hand one, using public recordings from 109 volunteers.</p>
+        <p>Picture moving your left hand, then your right. A good tool can tell which one you imagined, and we check that on public recordings from 109 volunteers.</p>
         <details>
           <summary>Technical details</summary>
           <p>Source is the EEG Motor Movement/Imagery Dataset on PhysioNet, with over 1500 one-minute and two-minute recordings at 64 channels and 160 samples per second in EDF+ format. Both classes come from the same imagery runs, so recording blocks never separate them.</p>
@@ -212,7 +212,7 @@
       <article class="card">
         <div class="tags"><span class="tag">Result</span><span class="tag access">Open Access</span><span class="tag state">Sample</span></div>
         <h3>Sealed Results</h3>
-        <p>Every result is sealed together with the exact recording and software version behind it. If anyone changes a number later, the seal breaks.</p>
+        <p>Every result is sealed with the exact recording and software version behind it. Change one number and the seal breaks.</p>
         <details>
           <summary>Technical details</summary>
           <p>Each record stores a SHA-256 hash of the input, the tool version, and an Ed25519 signature over both.</p>
@@ -232,7 +232,7 @@
       <article class="card">
         <div class="tags"><span class="tag">Test</span><span class="tag access">Open Access</span><span class="tag state">Sample</span></div>
         <h3>Eyes Open, Eyes Closed</h3>
-        <p>Closing your eyes changes your brain waves in a way scientists have known about since 1929. A tool that misses it needs a second look.</p>
+        <p>Close your eyes and your brain waves change, plain enough to see on a screen. A tool that misses something that big has no business reading brain signals.</p>
         <details>
           <summary>Technical details</summary>
           <p>Uses the two one-minute baseline runs in the same PhysioNet set. The expected result is stronger alpha activity, near 10 Hz, over the back of the head with eyes closed.</p>
@@ -241,7 +241,7 @@
       <article class="card">
         <div class="tags"><span class="tag">Check</span><span class="tag access">Open Access</span><span class="tag state">Sample</span></div>
         <h3>Shuffled Answers</h3>
-        <p>We scramble which moment belongs to which task and run the test again. A good tool should drop to guessing.</p>
+        <p>We scramble the answers and run the test again. A tool worth trusting falls straight to guessing.</p>
         <details>
           <summary>Technical details</summary>
           <p>Labels are permuted to build a null distribution. How labels are permuted, and how many times, depends on the bench and is not fixed yet.</p>
@@ -250,7 +250,7 @@
       <article class="card" id="guides">
         <div class="tags"><span class="tag">Result</span><span class="tag access">Open Access</span><span class="tag state">Sample</span></div>
         <h3>One-Page Reports</h3>
-        <p>Each run produces one page that puts the score next to its reality checks. Anyone can open it without special software.</p>
+        <p>Every run gets one page, with the score and every reality check it faced side by side. Anyone can open it without special software.</p>
         <details>
           <summary>Technical details</summary>
           <p>Reports are canonical JSON (RFC 8785), so they can be read without Nasion installed.</p>
@@ -271,7 +271,7 @@
     </svg>
     <div>
       <div class="head"><h2>About the Name</h2></div>
-      <p>The nasion is the dip at the top of the nose, one of the fixed points on the head from which EEG electrode positions are measured. Nasion gives brain signal software the same kind of fixed starting point.</p>
+      <p>The nasion is the dip at the top of your nose, the point EEG electrode positions are measured from. Nasion gives brain signal software the same kind of fixed starting point.</p>
     </div>
   </div>
 </section>
@@ -298,7 +298,7 @@
     </div>
     <div id="faqs">
       <h4>Nasion</h4>
-      <p>An independent, free and open source project for testing brain signal software.</p>
+      <p>Nasion is independent, free and open source, with no tool of its own to sell.</p>
       <p>Source recordings stay under the licenses of the public archives that host them.</p>
       <p>Nasion is a research tool for testing EEG analysis software. It is not intended to diagnose or treat any condition, and every claim states its measured accuracy, data and date.</p>
       <p><a href="#">Accessibility</a></p>
