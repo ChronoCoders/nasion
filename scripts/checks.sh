@@ -84,31 +84,37 @@ check_instruction_paths() {
     search_result "${statuses[1]}" "instruction file search"
 }
 
-# Miri is not set up yet. Any opt-out from deny(unsafe_code) means unsafe code
-# exists, and that code must not pass the gate untested. Whitespace is removed
-# before matching so an attribute split over lines is still found.
+# Miri is not set up yet, so no unsafe code may compile in the workspace.
+# Forbidding unsafe_code on the command line turns every opt-out into a compile
+# error wherever it comes from: an untracked file, a #[path] module or a macro.
+# Registry dependencies build with --cap-lints, so the forbid reaches only
+# workspace members and path dependencies. A separate target directory keeps
+# the normal build cache intact. Returns 2 when cargo fails for another reason.
 check_unsafe_allow() {
-    local files file content found=0
-    if ! files=$(git -c core.quotePath=false ls-files -- '*.rs'); then
-        echo "git ls-files failed. Check that this is a git work tree."
-        return 2
+    local output status
+    output=$(RUSTFLAGS="-F unsafe_code" CARGO_TARGET_DIR=target/forbid-check \
+        cargo check --locked --workspace --all-targets --all-features 2>&1)
+    status=$?
+    if ((status == 0)); then
+        echo "note: no unsafe"
+        return 0
     fi
-    while IFS= read -r file; do
-        [[ -n $file ]] || continue
-        if ! content=$(tr -d '[:space:]' <"$file"); then
-            echo "$file is tracked but cannot be read. Restore it or remove it from the index."
+    echo "$output"
+    LC_ALL=C grep -q -F 'unsafe_code' <<<"$output"
+    case $? in
+        0)
+            echo "Miri is not set up. Record a decision that pins its nightly toolchain and add it to the gate."
+            return 1
+            ;;
+        1)
+            echo "cargo check failed (exit $status) for a reason other than unsafe code. Fix the error above."
             return 2
-        fi
-        if grep -q -E '(allow|expect)\([^)]*unsafe_code' <<<"$content"; then
-            echo "$file opts out of deny(unsafe_code)"
-            found=1
-        fi
-    done <<<"$files"
-    if ((found)); then
-        echo "Miri is not set up. Record a decision that pins its nightly toolchain and add it to the gate."
-        return 1
-    fi
-    echo "note: no unsafe"
+            ;;
+        *)
+            echo "Searching the cargo check output for unsafe_code failed. Check that grep works."
+            return 2
+            ;;
+    esac
 }
 
 # Prints one line for each workspace member whose Cargo.toml does not set
@@ -157,8 +163,9 @@ sys.exit(1 if stray else 0)
 
 # Every target root of every workspace member must hold a crate-level
 # #![deny(unsafe_code)], and every member must inherit [workspace.lints].
-# check_unsafe_allow only sees opt-outs, so a crate that never denied unsafe
-# code is invisible to it. nasion-xtask checks the attribute by parsing each
+# The command line forbid in check_unsafe_allow lasts only until Miri is set
+# up, so this check keeps the attribute itself in place as SPEC Section 11
+# requires. nasion-xtask checks the attribute by parsing each
 # target root, so text in a comment or a string never counts. Members and
 # targets come from cargo metadata, never from a fixed list, and every
 # Cargo.toml on disk must belong to a member so none escapes that list.
