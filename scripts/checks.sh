@@ -194,8 +194,10 @@ check_deny_unsafe() {
 
 # Records the work tree, or compares it with a recorded state on stdin. The
 # state is the output of git status --porcelain=v1 -z --untracked-files=all
-# plus a SHA-256 of every tracked file as it is on disk. Exits 0 unchanged,
-# 1 changed (naming each path), 2 when git fails or the state cannot be read.
+# plus a SHA-256 of every tracked file and every untracked file that is not
+# ignored, as it is on disk. Ignored paths such as target/ and .venv/ stay out
+# because build steps write there by design. Exits 0 unchanged, 1 changed
+# (naming each path), 2 when git fails or the state cannot be read.
 TREE_STATE_PY='
 import hashlib, json, os, subprocess, sys
 
@@ -218,8 +220,8 @@ def content(path):
 
 def snapshot():
     status = git("status", "--porcelain=v1", "-z", "--untracked-files=all")
-    tracked = git("ls-files", "-z")
-    return {"status": sorted(status), "content": {path: content(path) for path in tracked}}
+    paths = git("ls-files", "-z") + git("ls-files", "-z", "--others", "--exclude-standard")
+    return {"status": sorted(status), "content": {path: content(path) for path in paths}}
 
 # A status record is "XY path". The source path of a rename comes as its own
 # record without the XY prefix.
