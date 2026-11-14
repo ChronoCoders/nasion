@@ -115,25 +115,34 @@ print(match.group(1))
 '
 
 check_unsafe_allow() {
-    local version host sysroot python target output status worst=0 failed=()
+    local version host_lines hosts=() host shown sysroot python target output status worst=0 failed=()
     if ! version=$(rustc -vV); then
         echo "rustc -vV failed. Check that the toolchain in rust-toolchain.toml is installed."
         return 2
     fi
-    if ! host=$(sed -n 's/^host: //p' <<<"$version"); then
+    if ! host_lines=$(sed -n '/^host: /p' <<<"$version"); then
         echo "Reading the host line from the rustc -vV output failed. Check that sed works."
         return 2
     fi
-    if [[ -z $host ]]; then
+    if [[ -n $host_lines ]]; then
+        mapfile -t hosts <<<"$host_lines"
+    fi
+    if ((${#hosts[@]} == 0)); then
         echo "rustc -vV printed no host line. Check which rustc is first on PATH."
         return 2
     fi
+    if ((${#hosts[@]} > 1)); then
+        echo "rustc -vV printed ${#hosts[@]} host lines, expected exactly one. Check which rustc is first on PATH."
+        return 2
+    fi
+    host=${hosts[0]#host: }
     if ! sysroot=$(rustc --print sysroot); then
         echo "rustc --print sysroot failed. Check that the toolchain in rust-toolchain.toml is installed."
         return 2
     fi
     if [[ $host != "$HOST_TARGET" ]]; then
-        echo "rustc reports host '$host'. The gate runs on $HOST_TARGET, so the host check would not cover that target."
+        printf -v shown '%q' "$host"
+        echo "rustc reports host $shown, printed shell-quoted so hidden characters show. The gate runs on $HOST_TARGET, so the host check would not cover that target."
         return 2
     fi
     for target in "${CROSS_TARGETS[@]}"; do
