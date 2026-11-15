@@ -3,7 +3,9 @@
 //! sets for doctests, and no lint level at the root can stop that. A macro
 //! can emit such an attribute after expansion, where a token scan never sees
 //! it, so every compiled doctest is also held to closed allowlists of macros,
-//! attributes and use items (D46).
+//! attributes and use items (D46). A use item may not bind a name on the
+//! derive allowlist either, because an import can rebind any derive macro to
+//! one of those names (D47).
 //!
 //! The doctests come from rustdoc's own list, never from walking source files.
 //! rustdoc reports each one at the line of the item's first doc fragment plus
@@ -520,10 +522,11 @@ fn macro_call_problem(tokens: &[TokenTree], index: usize, name: &Ident) -> Optio
     ))
 }
 
-/// Problems in the tokens of one use item after `use`. A glob fails, and so
-/// does any name on the macro allowlist anywhere in the tree, so nothing can
-/// shadow an allowlisted macro. Tokens that are not a use tree, such as the
-/// `use<'a>` of precise capturing, are skipped.
+/// Problems in the tokens of one use item after `use`. A glob fails (D46), and
+/// so does any name on the macro allowlist (D46) or the derive allowlist (D47)
+/// anywhere in the tree, so nothing can shadow an allowlisted macro or derive.
+/// Tokens that are not a use tree, such as the `use<'a>` of precise capturing,
+/// are skipped.
 fn use_problems(tree: &[TokenTree]) -> Vec<String> {
     if is_punct(tree.first(), '<') {
         return Vec::new();
@@ -538,11 +541,18 @@ fn use_problems(tree: &[TokenTree]) -> Vec<String> {
         ));
     }
     for token in &flat {
-        if let TokenTree::Ident(name) = token
-            && MACROS.contains(&name.unraw().to_string().as_str())
-        {
+        let TokenTree::Ident(name) = token else {
+            continue;
+        };
+        let bare = name.unraw().to_string();
+        if MACROS.contains(&bare.as_str()) {
             problems.push(format!(
                 "imports or renames {name} in use {text}, a name on the doctest macro allowlist (D46)."
+            ));
+        }
+        if DERIVES.contains(&bare.as_str()) {
+            problems.push(format!(
+                "imports or renames {name} in use {text}, a name on the doctest derive allowlist (D47)."
             ));
         }
     }
@@ -798,6 +808,41 @@ mod tests {
         rejected_with("use foo::{bar, vec};", "imports or renames vec");
         rejected_with("use foo::r#format;", "imports or renames r#format");
         rejected_with("use foo::vec", "imports or renames vec");
+    }
+
+    #[test]
+    fn use_items_naming_an_allowlisted_derive_are_rejected() {
+        for name in DERIVES {
+            for code in [
+                format!("use std::x::{name};"),
+                format!("use a::b as {name};"),
+                format!("use a::{{b, c::{{{name}}}}};"),
+            ] {
+                let found = problems(&code);
+                let expected = format!(
+                    "imports or renames {name} in use {}, a name on the doctest derive allowlist (D47).",
+                    code.trim_start_matches("use ")
+                        .trim_end_matches(';')
+                        .parse::<proc_macro2::TokenStream>()
+                        .unwrap()
+                );
+                assert_eq!(found, [expected], "{code}");
+            }
+        }
+        rejected_with("use a::r#Debug;", "imports or renames r#Debug");
+        rejected_with("use std::hash::Hash as _;", "imports or renames Hash");
+        rejected_with("use std::hash::Hash as Debug;", "imports or renames Hash");
+        assert_eq!(problems("use std::hash::Hash as Debug;").len(), 2);
+    }
+
+    #[test]
+    fn use_items_naming_neither_list_are_accepted() {
+        for code in [
+            "use std::collections::HashMap;",
+            "use std::{collections::{HashMap, BTreeMap}, io::{self, Read}};",
+        ] {
+            assert!(problems(code).is_empty(), "{code}: {:?}", problems(code));
+        }
     }
 
     #[test]
