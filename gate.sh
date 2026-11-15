@@ -74,7 +74,7 @@ banned_names() {
 tree_before=$(python3 -I -c "$TREE_STATE_PY" snapshot 2>&1)
 
 step "cargo fmt" fail_on_warnings cargo fmt --all --check
-step "cargo clippy" check_cargo_lints_warning cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+step "cargo clippy" check_clippy
 step "cargo test" fail_on_warnings cargo test --locked --workspace
 step "miri" check_unsafe_allow
 step "deny unsafe" check_deny_unsafe

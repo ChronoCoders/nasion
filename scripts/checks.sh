@@ -114,8 +114,11 @@ if match is None:
 print(match.group(1))
 '
 
-check_unsafe_allow() {
-    local version host_lines hosts=() host shown sysroot python target output status worst=0 unsafe_targets=()
+# Checks that rustc runs on HOST_TARGET and that every cross target is
+# installed, then prints the lowest Python version from requires-python.
+# Returns 2 and prints why when any of that fails.
+targets_ready() {
+    local version host_lines hosts=() host shown sysroot target found_python
     if ! version=$(rustc -vV); then
         echo "rustc -vV failed. Check that the toolchain in rust-toolchain.toml is installed."
         return 2
@@ -151,7 +154,16 @@ check_unsafe_allow() {
             return 2
         fi
     done
-    if ! python=$(python3 -I -c "$MIN_PYTHON_PY"); then
+    if ! found_python=$(python3 -I -c "$MIN_PYTHON_PY"); then
+        echo "$found_python"
+        return 2
+    fi
+    echo "$found_python"
+}
+
+check_unsafe_allow() {
+    local python target output status worst=0 unsafe_targets=()
+    if ! python=$(targets_ready); then
         echo "$python"
         return 2
     fi
@@ -425,6 +437,34 @@ check_cargo_lints_warning() {
         ((search == 2)) && return 2
     }
     return "$status"
+}
+
+# Runs clippy with -D warnings once on the host and once for each cross target
+# (D38), the same split as check_unsafe_allow, each in its own target
+# directory. Each run fails on warnings and on the [lints] warning, and a
+# failure names the target.
+check_clippy() {
+    local python target status worst=0 target_args
+    if ! python=$(targets_ready); then
+        echo "$python"
+        return 2
+    fi
+    for target in "$HOST_TARGET" "${CROSS_TARGETS[@]}"; do
+        target_args=()
+        [[ $target != "$HOST_TARGET" ]] && target_args=(--target "$target")
+        PYO3_CROSS_PYTHON_VERSION=$python CARGO_TARGET_DIR="target/clippy-$target" \
+            check_cargo_lints_warning cargo clippy --locked --workspace --all-targets --all-features \
+            "${target_args[@]}" -- -D warnings
+        status=$?
+        ((status == 0)) && continue
+        echo "cargo clippy for $target failed (exit $status)."
+        if ((status == 2)); then
+            worst=2
+        else
+            worst=$((worst > 1 ? worst : 1))
+        fi
+    done
+    return "$worst"
 }
 
 # The dataset manifest does not exist yet, so neither does its hash check. A
