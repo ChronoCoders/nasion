@@ -11,13 +11,18 @@
 //!   a crate-level `doc(test(attr(...)))`, in one attribute or two (D31, D39).
 //!   Crate lints do not reach doctests, and rustdoc adds `allow(unused)` to
 //!   them.
+//! - No doctest may lower a lint level with allow, expect or warn (D44). The
+//!   `doctests` module holds that check.
 //!
 //! The target kind comes from cargo metadata, never from the file name.
 //!
 //! Exit codes, read by `scripts/checks.sh`: 0 clean, 1 a target lacks an
-//! attribute, 2 the check could not run.
+//! attribute or a doctest lowers a lint level, 2 the check could not run.
 #![deny(unsafe_code)]
 
+mod doctests;
+
+use std::ffi::OsString;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -72,9 +77,10 @@ fn main() -> ExitCode {
     }
 }
 
-/// Returns one line per missing attribute.
+/// Returns one line per missing attribute or lowered lint level.
 fn check_workspace() -> Result<Vec<String>, String> {
-    let targets = workspace_targets()?;
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let (root, targets) = workspace_targets(&cargo)?;
     if targets.is_empty() {
         return Err(
             "cargo metadata listed no targets. Check the workspace members in Cargo.toml.".into(),
@@ -84,9 +90,15 @@ fn check_workspace() -> Result<Vec<String>, String> {
     for target in &targets {
         missing.extend(check_target(target)?);
     }
+    let (doctest_count, problems) = doctests::check(&cargo, &root)?;
+    missing.extend(problems);
     if missing.is_empty() {
-        writeln!(io::stdout().lock(), "note: {} targets", targets.len())
-            .map_err(|e| format!("writing the target count to stdout failed: {e}"))?;
+        writeln!(
+            io::stdout().lock(),
+            "note: {} targets, {doctest_count} doctests",
+            targets.len()
+        )
+        .map_err(|e| format!("writing the counts to stdout failed: {e}"))?;
     }
     Ok(missing)
 }
@@ -126,11 +138,11 @@ fn check_target(target: &Target) -> Result<Vec<String>, String> {
     Ok(missing)
 }
 
-/// Lists every target of every workspace member. Uses the cargo that ran this
-/// tool when there is one, so the pinned toolchain answers.
-fn workspace_targets() -> Result<Vec<Target>, String> {
-    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-    let output = Command::new(&cargo)
+/// Returns the workspace root and every target of every workspace member. Uses
+/// the cargo that ran this tool when there is one, so the pinned toolchain
+/// answers.
+fn workspace_targets(cargo: &OsString) -> Result<(PathBuf, Vec<Target>), String> {
+    let output = Command::new(cargo)
         .args(["metadata", "--no-deps", "--format-version", "1"])
         .output()
         .map_err(|e| format!("starting {} failed: {e}", cargo.to_string_lossy()))?;
@@ -143,6 +155,10 @@ fn workspace_targets() -> Result<Vec<Target>, String> {
     }
     let metadata: serde_json::Value = serde_json::from_slice(&output.stdout)
         .map_err(|e| format!("cargo metadata output is not JSON: {e}"))?;
+    let root = metadata["workspace_root"]
+        .as_str()
+        .map(PathBuf::from)
+        .ok_or("cargo metadata output has no workspace_root")?;
     let packages = metadata["packages"]
         .as_array()
         .ok_or("cargo metadata output has no packages list")?;
@@ -179,7 +195,7 @@ fn workspace_targets() -> Result<Vec<Target>, String> {
             });
         }
     }
-    Ok(targets)
+    Ok((root, targets))
 }
 
 fn parse_root(path: &Path) -> Result<syn::File, String> {
