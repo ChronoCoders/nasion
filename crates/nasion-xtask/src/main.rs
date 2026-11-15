@@ -16,6 +16,9 @@
 //! - No `doc(test(attr(...)))` may reach doctests from anywhere but the exact
 //!   crate-root form, and no attribute may hold a `$` token (D48). The
 //!   `doc_attributes` module holds that check.
+//! - Every file rustc reads for a library target, on the host and on each
+//!   cross target, is a `.rs` file that check scans (D50). The `dep_info`
+//!   module holds that check.
 //!
 //! The target kind comes from cargo metadata, never from the file name.
 //!
@@ -23,6 +26,7 @@
 //! attribute or a doctest lowers a lint level, 2 the check could not run.
 #![deny(unsafe_code)]
 
+mod dep_info;
 mod doc_attributes;
 mod doctests;
 
@@ -100,12 +104,21 @@ fn check_workspace() -> Result<Vec<String>, String> {
         .map(|target| target.src_path.clone())
         .collect();
     missing.extend(doc_attributes::check(&root, &library_roots)?);
+    let mut library_packages: Vec<&str> = targets
+        .iter()
+        .filter(|target| target.has_kind(&LIBRARY_KINDS))
+        .map(|target| target.package.as_str())
+        .collect();
+    library_packages.sort_unstable();
+    library_packages.dedup();
+    let (dep_info_count, problems) = dep_info::check(&cargo, &root, &library_packages)?;
+    missing.extend(problems);
     let (doctest_count, problems) = doctests::check(&cargo, &root)?;
     missing.extend(problems);
     if missing.is_empty() {
         writeln!(
             io::stdout().lock(),
-            "note: {} targets, {doctest_count} doctests",
+            "note: {} targets, {doctest_count} doctests, {dep_info_count} dep-info files",
             targets.len()
         )
         .map_err(|e| format!("writing the counts to stdout failed: {e}"))?;

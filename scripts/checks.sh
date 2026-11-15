@@ -267,7 +267,7 @@ sys.exit(1 if stray else 0)
 # targets come from cargo metadata, never from a fixed list, and every
 # Cargo.toml on disk must belong to a member so none escapes that list.
 check_deny_unsafe() {
-    local meta meta_err missing stray status output warned=0
+    local meta meta_err missing stray status output python warned=0
     if ! meta_err=$(mktemp); then
         echo "mktemp failed, so the stderr of cargo metadata cannot be kept. Check that the temporary directory is writable."
         return 2
@@ -297,8 +297,13 @@ check_deny_unsafe() {
         return 2
     fi
     missing+=${stray:+${missing:+$'\n'}$stray}
-    # Without --quiet, because --quiet also hides cargo's warnings.
-    output=$(CARGO_TERM_COLOR=never cargo run --locked -p nasion-xtask 2>&1)
+    if ! python=$(targets_ready); then
+        echo "$python"
+        return 2
+    fi
+    # Without --quiet, because --quiet also hides cargo's warnings. The Python
+    # version is for the PyO3 cross builds of the D50 dep-info check.
+    output=$(NASION_PYO3_CROSS_PYTHON_VERSION=$python CARGO_TERM_COLOR=never cargo run --locked -p nasion-xtask 2>&1)
     status=$?
     echo "$output"
     if ((status > 1)); then

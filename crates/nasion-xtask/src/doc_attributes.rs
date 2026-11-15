@@ -20,11 +20,11 @@
 //!   to it.
 //! - A use item that names `include` fails, so `include!` cannot be rebound.
 //!
-//! With these rules every workspace file rustc reads is a `.rs` file found by
-//! mod resolution, which the walk covers, with two exceptions these tokens
-//! cannot show: a macro that calls a macro passed in as a metavariable
-//! (`$name!`), which can be handed `include`, and a dependency's proc macro
-//! that reads a file itself.
+//! A macro could still be handed `include` and call it as `$name!`, so a
+//! `$` followed by an ident and `!` fails too (D50). With these rules every
+//! workspace file rustc reads is a `.rs` file found by mod resolution, which
+//! the walk covers. The `dep_info` module checks that against rustc's own
+//! record of the files it read, which also sees what a token scan cannot.
 //!
 //! The files are tokenized, so comments and string literals never count, and
 //! every group is scanned at any depth, macro bodies included. `#[doc = "..."]`,
@@ -37,11 +37,11 @@ use proc_macro2::{Delimiter, Group, Spacing, TokenStream, TokenTree};
 use syn::ext::IdentExt;
 
 /// Directories under the workspace root that hold no workspace source.
-const SKIPPED_DIRS: [&str; 3] = ["target", ".venv", ".git"];
+pub const SKIPPED_DIRS: [&str; 3] = ["target", ".venv", ".git"];
 /// The `level(lint)` entries a crate-root `doc(test(attr(...)))` may hold.
 const ROOT_ENTRIES: [(&str, &str); 2] = [("forbid", "unsafe_code"), ("deny", "warnings")];
 
-/// One line per D48 or D49 problem in the `.rs` files under `root`. `library_roots`
+/// One line per D48, D49 or D50 problem in the `.rs` files under `root`. `library_roots`
 /// are the source files of the targets whose kinds include a library kind.
 pub fn check(root: &Path, library_roots: &[PathBuf]) -> Result<Vec<String>, String> {
     let mut files = Vec::new();
@@ -107,7 +107,7 @@ struct Problem {
     decision: &'static str,
 }
 
-/// The D48 and D49 problems in one file's code. `library_root` allows the crate-root
+/// The D48, D49 and D50 problems in one file's code. `library_root` allows the crate-root
 /// form at the top level.
 fn scan(code: &str, library_root: bool) -> Vec<Problem> {
     match code.parse::<TokenStream>() {
@@ -214,6 +214,25 @@ fn scan_stream(stream: TokenStream, root_level: bool, problems: &mut Vec<Problem
                             render(&tokens[index + 1..end])
                         ),
                         decision: "D49",
+                    });
+                }
+            }
+            TokenTree::Punct(dollar) if dollar.as_char() == '$' => {
+                if let Some(TokenTree::Ident(_)) = tokens.get(index + 1)
+                    && is_macro_bang(&tokens, index + 2)
+                {
+                    let end = if matches!(tokens.get(index + 3), Some(TokenTree::Group(_))) {
+                        index + 3
+                    } else {
+                        index + 2
+                    };
+                    problems.push(Problem {
+                        line: Some(dollar.span().start().line),
+                        text: format!(
+                            "calls a macro passed in as {}, which can be handed include! or any other macro",
+                            render(&tokens[index..=end])
+                        ),
+                        decision: "D50",
                     });
                 }
             }
@@ -579,6 +598,47 @@ mod tests {
             "fn f<'a>(x: &'a u8) -> impl Sized + use<'a> { x }",
             "let include = 1; let same = include != 2;",
             "let include = true; let other = !include;",
+        ] {
+            accepted(code, false);
+        }
+    }
+
+    #[test]
+    fn calling_a_macro_passed_in_is_rejected() {
+        for code in [
+            "macro_rules! m { ($i:ident) => { $i!(x) }; }",
+            "macro_rules! m { ($i:ident) => { $i![x] }; }",
+            "macro_rules! m { ($i:ident) => { $i!{x} }; }",
+            "macro_rules! m { ($i:ident) => { $r#i!(x) }; }",
+            "macro_rules! m { ($i:ident) => { $i!; }; }",
+            "macro_rules! outer { () => { macro_rules! inner { ($i:ident) => { { $i!(x) } }; } }; }",
+            "macro_rules! m { ($i:ident) => { fn f() { let v = vec![$i!(x)]; } }; }",
+        ] {
+            rejected_with(code, false, "calls a macro passed in as");
+            rejected_with(code, false, "(D50)");
+        }
+        assert_eq!(
+            texts(
+                "macro_rules! m {\n    ($i:ident) => { $i!(\"inc.in\"); };\n}",
+                false
+            ),
+            [
+                "Some(2) calls a macro passed in as $ i ! (\"inc.in\"), which can be handed include! or any other macro (D50)"
+            ]
+        );
+    }
+
+    #[test]
+    fn dollars_that_do_not_call_a_macro_are_accepted() {
+        for code in [
+            "macro_rules! m { () => { $crate::m!() }; }",
+            "macro_rules! m { ($i:ident) => { let $i = 1; }; }",
+            "macro_rules! m { ($i:ident) => { $i != 1 }; }",
+            "macro_rules! m { ($($x:tt)*) => { $($x)* }; }",
+            "macro_rules! m { ($i:ident) => { fn $i() {} }; }",
+            "macro_rules! m { () => { other!() }; }",
+            "m!();",
+            "let s = \"$i!(x)\";",
         ] {
             accepted(code, false);
         }

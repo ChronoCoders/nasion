@@ -1,0 +1,367 @@
+//! Cross-checks the D48 scan against the files rustc reads (D50). For every
+//! library package and for the host and each cross target, rustc writes a
+//! dep-info file listing every file the crate's compilation read, whatever
+//! macro led there. Every listed file must be a `.rs` file the D48 walk scans:
+//! inside the workspace root and outside its `target`, `.venv` and `.git`.
+//!
+//! cargo runs with `--profile check`, so rustc emits dep-info and metadata
+//! only. The default profile also links, and a cdylib cannot link for the
+//! Windows target without the MSVC linker.
+
+use std::ffi::OsString;
+use std::fs;
+use std::io;
+use std::path::{Component, Path, PathBuf};
+use std::process::Command;
+
+use crate::doc_attributes::SKIPPED_DIRS;
+
+/// The target the gate runs on, which `scripts/checks.sh` verifies before it
+/// runs this tool. The host run passes no `--target`.
+const HOST_TARGET: &str = "x86_64-unknown-linux-gnu";
+/// The targets in `rust-toolchain.toml` besides the host.
+const CROSS_TARGETS: [&str; 1] = ["x86_64-pc-windows-msvc"];
+/// Set by `scripts/checks.sh` from requires-python in pyproject.toml, and
+/// passed to PyO3 as `PYO3_CROSS_PYTHON_VERSION` for the cross runs.
+const PYTHON_VERSION_VAR: &str = "NASION_PYO3_CROSS_PYTHON_VERSION";
+
+/// Runs the dep-info builds and returns how many dep-info files were read and
+/// one line per listed file the D48 walk does not scan.
+pub fn check(
+    cargo: &OsString,
+    root: &Path,
+    packages: &[&str],
+) -> Result<(usize, Vec<String>), String> {
+    let python = std::env::var(PYTHON_VERSION_VAR).map_err(|e| {
+        format!(
+            "{PYTHON_VERSION_VAR} is not usable ({e}). scripts/checks.sh sets it from requires-python in pyproject.toml, so run this check through gate.sh."
+        )
+    })?;
+    let target_dir = root.join("target").join("dep-info");
+    let files_dir = target_dir.join("files");
+    fs::create_dir_all(&files_dir)
+        .map_err(|e| format!("{} cannot be created: {e}", files_dir.display()))?;
+    let triples: Vec<Option<&str>> = [None]
+        .into_iter()
+        .chain(CROSS_TARGETS.iter().copied().map(Some))
+        .collect();
+    let mut count = 0;
+    let mut problems = Vec::new();
+    for package in packages {
+        for triple in &triples {
+            let label = triple.unwrap_or(HOST_TARGET);
+            let file = files_dir.join(format!("{package}-{label}.d"));
+            let deps = run(cargo, root, &target_dir, package, *triple, &python, &file)?;
+            count += 1;
+            for dep in deps {
+                if let Some(reason) = unscanned(root, &dep) {
+                    problems.push(format!(
+                        "the {package} library target for {label} reads {dep}, {reason} (D50)."
+                    ));
+                }
+            }
+        }
+    }
+    Ok((count, problems))
+}
+
+/// Builds one package for one target and returns the files its dep-info lists.
+fn run(
+    cargo: &OsString,
+    root: &Path,
+    target_dir: &Path,
+    package: &str,
+    triple: Option<&str>,
+    python: &str,
+    file: &Path,
+) -> Result<Vec<String>, String> {
+    let file_text = file
+        .to_str()
+        .filter(|text| !text.contains(','))
+        .ok_or_else(|| {
+            format!(
+                "{} is not UTF-8 or holds a comma, so it cannot be passed to --emit",
+                file.display()
+            )
+        })?;
+    match fs::remove_file(file) {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => {
+            return Err(format!("{} cannot be removed: {e}", file.display()));
+        }
+        _ => {}
+    }
+    let emit = format!("--emit=dep-info={file_text},metadata");
+    let mut args = vec![
+        "rustc",
+        "--locked",
+        "-p",
+        package,
+        "--lib",
+        "--all-features",
+        "--profile",
+        "check",
+    ];
+    let mut command = Command::new(cargo);
+    command
+        .current_dir(root)
+        .env("CARGO_TERM_COLOR", "never")
+        .env("CARGO_TARGET_DIR", target_dir);
+    if let Some(triple) = triple {
+        args.extend(["--target", triple]);
+        command.env("PYO3_CROSS_PYTHON_VERSION", python);
+    }
+    args.extend(["--", &emit]);
+    let shown = format!("cargo {}", args.join(" "));
+    let output = command
+        .args(&args)
+        .output()
+        .map_err(|e| format!("starting {shown} failed: {e}"))?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !output.status.success() {
+        return Err(format!(
+            "{shown} failed ({}).\n{}",
+            output.status,
+            stderr.trim_end()
+        ));
+    }
+    let text = fs::read_to_string(file).map_err(|e| {
+        format!(
+            "{shown} succeeded but {} cannot be read: {e}\n{}",
+            file.display(),
+            stderr.trim_end()
+        )
+    })?;
+    let deps = parse(&text).map_err(|e| format!("{} {e}", file.display()))?;
+    if deps.is_empty() {
+        return Err(format!(
+            "{shown} wrote {} with no dependencies.\n{}",
+            file.display(),
+            stderr.trim_end()
+        ));
+    }
+    Ok(deps)
+}
+
+/// The files a dep-info file lists, from its rules and its phony `path:` lines,
+/// unescaped, each once in the order first seen. rustc writes it in `write_out_deps` and escapes each file name in
+/// `escape_dep_filename`, both in compiler/rustc_interface/src/passes.rs of
+/// rust-lang/rust at commit 0ef1bc386059596dada8fb65b50425aab2ea637a (tag
+/// 1.100.0). Only a space is escaped, as `\ `, so a `#` or a backslash in a
+/// name is written as is. A rule is `output: file file ...`, a phony line is
+/// `file:`, and lines starting with `#` are comments such as `# env-dep:`.
+fn parse(text: &str) -> Result<Vec<String>, String> {
+    let mut deps = Vec::new();
+    for (number, line) in text.lines().enumerate() {
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some(phony) = line.strip_suffix(':')
+            && !phony.contains(": ")
+        {
+            add_unique(&mut deps, split_unescaped(phony));
+            continue;
+        }
+        let Some(at) = line.find(": ") else {
+            return Err(format!(
+                "line {} is not a rule, a phony target or a comment: {line:?}",
+                number + 1
+            ));
+        };
+        add_unique(&mut deps, split_unescaped(&line[at + 2..]));
+    }
+    Ok(deps)
+}
+
+fn add_unique(deps: &mut Vec<String>, names: Vec<String>) {
+    for name in names {
+        if !deps.contains(&name) {
+            deps.push(name);
+        }
+    }
+}
+
+/// Splits on spaces that are not escaped and turns `\ ` back into a space.
+fn split_unescaped(text: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut name = String::new();
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\\' if chars.peek() == Some(&' ') => {
+                name.push(' ');
+                chars.next();
+            }
+            ' ' => {
+                if !name.is_empty() {
+                    names.push(std::mem::take(&mut name));
+                }
+            }
+            _ => name.push(ch),
+        }
+    }
+    if !name.is_empty() {
+        names.push(name);
+    }
+    names
+}
+
+/// Why the D48 walk would not scan a listed file, or None when it would.
+/// Relative names resolve against the workspace root, where cargo runs rustc.
+fn unscanned(root: &Path, dep: &str) -> Option<&'static str> {
+    let path: PathBuf = root.join(dep);
+    let Ok(relative) = path.strip_prefix(root) else {
+        return Some("which is outside the workspace root");
+    };
+    if !relative
+        .components()
+        .all(|component| matches!(component, Component::Normal(_)))
+    {
+        return Some("which is not a plain path below the workspace root");
+    }
+    if relative
+        .components()
+        .next()
+        .is_some_and(|first| SKIPPED_DIRS.iter().any(|dir| first.as_os_str() == *dir))
+    {
+        return Some("which is under a directory the D48 scan skips");
+    }
+    if path.extension().is_none_or(|ext| ext != "rs") {
+        return Some("which is not a .rs file");
+    }
+    if !path.is_file() {
+        return Some("which is not a file on disk");
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::path::PathBuf;
+
+    use super::{parse, unscanned};
+
+    #[test]
+    fn rules_and_phony_lines_give_every_listed_file() {
+        let text = "/abs/target/out.rmeta: crates/a/src/lib.rs /abs/other/x.rs\n\n/abs/target/out.d: crates/a/src/lib.rs\n\ncrates/a/src/lib.rs:\n/abs/other/x.rs:\n\n# env-dep:CARGO_PKG_VERSION=0.1.0\n# env-dep:NO_VALUE\n";
+        assert_eq!(
+            parse(text).unwrap(),
+            ["crates/a/src/lib.rs", "/abs/other/x.rs"]
+        );
+    }
+
+    #[test]
+    fn escaped_spaces_and_raw_hashes_are_read_as_rustc_writes_them() {
+        assert_eq!(
+            parse("out.rmeta: a/my\\ file.rs b/#x.rs c\\d.rs\n").unwrap(),
+            ["a/my file.rs", "b/#x.rs", "c\\d.rs"]
+        );
+        assert_eq!(parse("a/my\\ file.rs:\n").unwrap(), ["a/my file.rs"]);
+        assert_eq!(parse("a/x:y.rs:\n").unwrap(), ["a/x:y.rs"]);
+        assert_eq!(
+            parse("b.rs:\nout.rmeta: a.rs b.rs\n").unwrap(),
+            ["b.rs", "a.rs"]
+        );
+        assert_eq!(parse("out.rmeta: a.rs  b.rs \n").unwrap(), ["a.rs", "b.rs"]);
+    }
+
+    #[test]
+    fn blank_lines_comments_and_empty_rules_list_nothing() {
+        assert!(parse("").unwrap().is_empty());
+        assert!(parse("\n\n# env-dep:X=1\n#x.rs:\n").unwrap().is_empty());
+        assert!(parse("out.rmeta: \n").unwrap().is_empty());
+    }
+
+    #[test]
+    fn unknown_lines_are_errors() {
+        for text in [
+            "garbage\n",
+            "out.rmeta:a.rs\n",
+            " leading space\n",
+            "out.rmeta: a.rs\nnot a rule\n",
+        ] {
+            let error = parse(text).unwrap_err();
+            assert!(
+                error.contains("is not a rule, a phony target or a comment"),
+                "{text:?}: {error}"
+            );
+        }
+        assert!(parse("ok.rs:\nbad\n").unwrap_err().starts_with("line 2 "));
+    }
+
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new(name: &str) -> Self {
+            let dir =
+                std::env::temp_dir().join(format!("nasion-d50-{name}-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+
+        fn write(&self, path: &str) {
+            let path = self.0.join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, "").unwrap();
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn only_rs_files_the_walk_scans_are_accepted() {
+        let scratch = Scratch::new("checker");
+        let root = scratch.0.join("ws");
+        for file in [
+            "ws/crates/a/src/lib.rs",
+            "ws/crates/a/src/inc.in",
+            "ws/crates/a/target/nested.rs",
+            "ws/target/debug/out.rs",
+            "ws/.venv/lib/x.rs",
+            "ws/.git/x.rs",
+            "outside.rs",
+        ] {
+            scratch.write(file);
+        }
+        let absolute = root.join("crates/a/src/lib.rs");
+        let outside = scratch.0.join("outside.rs");
+        let climbing = root.join("crates/../../outside.rs");
+        assert_eq!(unscanned(&root, "crates/a/src/lib.rs"), None);
+        assert_eq!(unscanned(&root, absolute.to_str().unwrap()), None);
+        assert_eq!(unscanned(&root, "crates/a/target/nested.rs"), None);
+        assert_eq!(unscanned(&root, "crates/./a/src/lib.rs"), None);
+        assert_eq!(
+            unscanned(&root, climbing.to_str().unwrap()),
+            Some("which is not a plain path below the workspace root")
+        );
+        for (dep, reason) in [
+            ("crates/a/src/inc.in", "which is not a .rs file"),
+            (
+                outside.to_str().unwrap(),
+                "which is outside the workspace root",
+            ),
+            (
+                "target/debug/out.rs",
+                "which is under a directory the D48 scan skips",
+            ),
+            (
+                ".venv/lib/x.rs",
+                "which is under a directory the D48 scan skips",
+            ),
+            (".git/x.rs", "which is under a directory the D48 scan skips"),
+            (
+                "../outside.rs",
+                "which is not a plain path below the workspace root",
+            ),
+            ("crates/a/src/missing.rs", "which is not a file on disk"),
+            ("crates/a/src", "which is not a .rs file"),
+        ] {
+            assert_eq!(unscanned(&root, dep), Some(reason), "{dep}");
+        }
+    }
+}
