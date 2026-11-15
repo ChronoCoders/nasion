@@ -13,6 +13,9 @@
 //!   them.
 //! - No doctest may lower a lint level with allow, expect or warn (D44). The
 //!   `doctests` module holds that check.
+//! - No `doc(test(attr(...)))` may reach doctests from anywhere but the exact
+//!   crate-root form, and no attribute may hold a `$` token (D48). The
+//!   `doc_attributes` module holds that check.
 //!
 //! The target kind comes from cargo metadata, never from the file name.
 //!
@@ -20,6 +23,7 @@
 //! attribute or a doctest lowers a lint level, 2 the check could not run.
 #![deny(unsafe_code)]
 
+mod doc_attributes;
 mod doctests;
 
 use std::ffi::OsString;
@@ -90,6 +94,12 @@ fn check_workspace() -> Result<Vec<String>, String> {
     for target in &targets {
         missing.extend(check_target(target)?);
     }
+    let library_roots: Vec<PathBuf> = targets
+        .iter()
+        .filter(|target| target.has_kind(&LIBRARY_KINDS))
+        .map(|target| target.src_path.clone())
+        .collect();
+    missing.extend(doc_attributes::check(&root, &library_roots)?);
     let (doctest_count, problems) = doctests::check(&cargo, &root)?;
     missing.extend(problems);
     if missing.is_empty() {
