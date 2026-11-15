@@ -20,6 +20,9 @@
 //!   to it.
 //! - A use item that names `include` fails, so `include!` cannot be rebound.
 //!
+//! `include_str!` and `include_bytes!` also make rustc read a file that is not
+//! `.rs`, so both rules cover them the same way (D51).
+//!
 //! A macro could still be handed `include` and call it as `$name!`, so a
 //! `$` followed by an ident and `!` fails too (D50). With these rules every
 //! workspace file rustc reads is a `.rs` file found by mod resolution, which
@@ -27,8 +30,8 @@
 //! record of the files it read, which also sees what a token scan cannot.
 //!
 //! The files are tokenized, so comments and string literals never count, and
-//! every group is scanned at any depth, macro bodies included. `#[doc = "..."]`,
-//! doc comments, `include_str!` and `include_bytes!` are not affected.
+//! every group is scanned at any depth, macro bodies included. `#[doc = "..."]`
+//! and doc comments are not affected.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -38,6 +41,13 @@ use syn::ext::IdentExt;
 
 /// Directories under the workspace root that hold no workspace source.
 pub const SKIPPED_DIRS: [&str; 3] = ["target", ".venv", ".git"];
+/// Macros that make rustc read a file, each with the decision that bans it:
+/// `include` (D49), `include_str` and `include_bytes` (D51).
+const READING_MACROS: [(&str, &str); 3] = [
+    ("include", "D49"),
+    ("include_str", "D51"),
+    ("include_bytes", "D51"),
+];
 /// The `level(lint)` entries a crate-root `doc(test(attr(...)))` may hold.
 const ROOT_ENTRIES: [(&str, &str); 2] = [("forbid", "unsafe_code"), ("deny", "warnings")];
 
@@ -182,7 +192,7 @@ fn scan_stream(stream: TokenStream, root_level: bool, problems: &mut Vec<Problem
                     });
                 }
             }
-            TokenTree::Ident(ident) if ident.unraw() == "include" => {
+            TokenTree::Ident(ident) if let Some((name, decision)) = reading_macro(ident) => {
                 if is_macro_bang(&tokens, index + 1) {
                     let end = if matches!(tokens.get(index + 2), Some(TokenTree::Group(_))) {
                         index + 2
@@ -192,10 +202,10 @@ fn scan_stream(stream: TokenStream, root_level: bool, problems: &mut Vec<Problem
                     problems.push(Problem {
                         line: Some(ident.span().start().line),
                         text: format!(
-                            "calls include!, {}, which makes rustc read a file the scan does not",
+                            "calls {name}!, {}, which makes rustc read a file the scan does not",
                             render(&tokens[index..=end])
                         ),
-                        decision: "D49",
+                        decision,
                     });
                 }
             }
@@ -206,15 +216,17 @@ fn scan_stream(stream: TokenStream, root_level: bool, problems: &mut Vec<Problem
                     .iter()
                     .position(|token| is_punct(Some(token), ';'))
                     .map_or(tokens.len(), |offset| index + offset);
-                if names_include(&tokens[index + 1..end]) {
-                    problems.push(Problem {
-                        line: Some(ident.span().start().line),
-                        text: format!(
-                            "names include in use {}, which could rebind include! to another name",
-                            render(&tokens[index + 1..end])
-                        ),
-                        decision: "D49",
-                    });
+                for (name, decision) in READING_MACROS {
+                    if names(&tokens[index + 1..end], name) {
+                        problems.push(Problem {
+                            line: Some(ident.span().start().line),
+                            text: format!(
+                                "names {name} in use {}, which could rebind {name}! to another name",
+                                render(&tokens[index + 1..end])
+                            ),
+                            decision,
+                        });
+                    }
                 }
             }
             TokenTree::Punct(dollar) if dollar.as_char() == '$' => {
@@ -282,11 +294,17 @@ fn sets_path(stream: TokenStream) -> bool {
     })
 }
 
-/// True when a use tree holds the ident `include` at any depth.
-fn names_include(tree: &[TokenTree]) -> bool {
+/// The entry of `READING_MACROS` an ident names, if any.
+fn reading_macro(ident: &proc_macro2::Ident) -> Option<(&'static str, &'static str)> {
+    let bare = ident.unraw();
+    READING_MACROS.into_iter().find(|(name, _)| bare == name)
+}
+
+/// True when a use tree holds the ident `name` at any depth.
+fn names(tree: &[TokenTree], name: &str) -> bool {
     tree.iter().any(|token| match token {
-        TokenTree::Ident(ident) => ident.unraw() == "include",
-        TokenTree::Group(group) => names_include(&group.stream().into_iter().collect::<Vec<_>>()),
+        TokenTree::Ident(ident) => ident.unraw() == name,
+        TokenTree::Group(group) => names(&group.stream().into_iter().collect::<Vec<_>>(), name),
         _ => false,
     })
 }
@@ -589,8 +607,6 @@ mod tests {
             "#[doc = \"path = x\"]\nfn f() {}",
             "#[cfg(feature = \"path\")]\nfn f() {}",
             "#[cfg(path)]\nfn f() {}",
-            "let s = include_str!(\"x\");",
-            "let b = include_bytes!(\"x\");",
             "let s = \"include!(x) use std::include as inc; #[path = x]\";",
             "// include!(\"x\"); #[path = \"x\"]\nfn f() {}",
             "use std::path::Path;",
@@ -598,9 +614,69 @@ mod tests {
             "fn f<'a>(x: &'a u8) -> impl Sized + use<'a> { x }",
             "let include = 1; let same = include != 2;",
             "let include = true; let other = !include;",
+            "let s = \"include_str!(x) include_bytes!(x) use std::include_str;\";",
+            "// include_str!(\"x\"); include_bytes!(\"x\");\nfn f() {}",
+            "/* use std::include_bytes as b; */\nfn f() {}",
+            "let include_str = 1; let same = include_str != 2;",
+            "let include_bytes = 1; let same = include_bytes != 2;",
+            "use std::include_strings;",
+            "fn include_str() {}",
         ] {
             accepted(code, false);
         }
+    }
+
+    #[test]
+    fn include_str_and_include_bytes_are_rejected_like_include() {
+        for name in ["include_str", "include_bytes"] {
+            for code in [
+                format!("let s = {name}!(\"x\");"),
+                format!("let s = {name}![\"x\"];"),
+                format!("let s = {name}! {{ \"x\" }};"),
+                format!("let s = std::{name}!(\"x\");"),
+                format!("let s = core::{name}!(\"x\");"),
+                format!("let s = r#{name}!(\"x\");"),
+                format!("macro_rules! m {{ () => {{ {name}!(\"x\") }}; }}"),
+                format!("let v = vec![{name}!(\"x\")];"),
+            ] {
+                let found = texts(&code, false);
+                assert_eq!(found.len(), 1, "{code}: {found:?}");
+                assert!(
+                    found[0].contains(&format!("calls {name}!, "))
+                        && found[0]
+                            .ends_with("which makes rustc read a file the scan does not (D51)"),
+                    "{code}: {found:?}"
+                );
+            }
+        }
+        for (code, name) in [
+            ("use std::include_str;", "include_str"),
+            ("use std::include_bytes as b;", "include_bytes"),
+            ("use std::{include_bytes};", "include_bytes"),
+            ("use std::{fmt, r#include_str as s};", "include_str"),
+        ] {
+            let found = texts(code, false);
+            assert_eq!(found.len(), 1, "{code}: {found:?}");
+            assert!(
+                found[0].contains(&format!("names {name} in use "))
+                    && found[0]
+                        .ends_with(&format!("which could rebind {name}! to another name (D51)")),
+                "{code}: {found:?}"
+            );
+        }
+        assert_eq!(
+            texts("\nconst NOTE: &str = include_str!(\"note.txt\");", false),
+            [
+                "Some(2) calls include_str!, include_str ! (\"note.txt\"), which makes rustc read a file the scan does not (D51)"
+            ]
+        );
+        assert_eq!(
+            texts("use std::{include, include_bytes};", false),
+            [
+                "Some(1) names include in use std :: { include , include_bytes }, which could rebind include! to another name (D49)",
+                "Some(1) names include_bytes in use std :: { include , include_bytes }, which could rebind include_bytes! to another name (D51)",
+            ]
+        );
     }
 
     #[test]
