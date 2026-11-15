@@ -19,6 +19,9 @@
 //! - Every file rustc reads for a library target, on the host and on each
 //!   cross target, is a `.rs` file that check scans (D50). The `dep_info`
 //!   module holds that check.
+//! - The proc macros in the build graph are exactly an allowlist, by name and
+//!   version, and no workspace member has a proc-macro target (D52). The
+//!   `proc_macros` module holds that check.
 //!
 //! The target kind comes from cargo metadata, never from the file name.
 //!
@@ -29,6 +32,7 @@
 mod dep_info;
 mod doc_attributes;
 mod doctests;
+mod proc_macros;
 
 use std::ffi::OsString;
 use std::fs;
@@ -115,10 +119,12 @@ fn check_workspace() -> Result<Vec<String>, String> {
     missing.extend(problems);
     let (doctest_count, problems) = doctests::check(&cargo, &root)?;
     missing.extend(problems);
+    let (proc_macro_count, problems) = proc_macros::check(&cargo, &root)?;
+    missing.extend(problems);
     if missing.is_empty() {
         writeln!(
             io::stdout().lock(),
-            "note: {} targets, {doctest_count} doctests, {dep_info_count} dep-info files",
+            "note: {} targets, {doctest_count} doctests, {dep_info_count} dep-info files, {proc_macro_count} proc macros",
             targets.len()
         )
         .map_err(|e| format!("writing the counts to stdout failed: {e}"))?;
