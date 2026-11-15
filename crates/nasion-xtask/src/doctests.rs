@@ -1,12 +1,16 @@
 //! Rejects lint-lowering attributes in doctests (D44). A doctest's own
 //! `allow`, `expect` or `warn` lifts the `deny(warnings)` that the crate root
-//! sets for doctests, and no lint level at the root can stop that.
+//! sets for doctests, and no lint level at the root can stop that. A macro
+//! can emit such an attribute after expansion, where a token scan never sees
+//! it, so every compiled doctest is also held to closed allowlists of macros,
+//! attributes and use items (D46).
 //!
 //! The doctests come from rustdoc's own list, never from walking source files.
 //! rustdoc reports each one at the line of the item's first doc fragment plus
 //! the offset of the opening fence in the joined doc text, so the code blocks
 //! are rebuilt the same way from each item's literal doc attributes.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::ffi::OsStr;
@@ -14,13 +18,45 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use proc_macro2::{Delimiter, TokenStream, TokenTree};
+use proc_macro2::{Delimiter, Ident, LexError, TokenStream, TokenTree};
 use syn::ext::IdentExt;
 use syn::visit::{self, Visit};
 use syn::{Attribute, Expr, ExprLit, Lit, Meta};
 
-/// Attributes that lower a lint level below what the crate root sets.
+/// Attributes that lower a lint level below what the crate root sets (D44).
 const LOWERING: [&str; 3] = ["allow", "expect", "warn"];
+
+/// The only macros a doctest may call, by bare name (D46). Any other macro,
+/// and these through a path, could expand to a lint attribute the scan never
+/// sees.
+const MACROS: [&str; 13] = [
+    "assert",
+    "assert_eq",
+    "assert_ne",
+    "debug_assert",
+    "debug_assert_eq",
+    "debug_assert_ne",
+    "format",
+    "vec",
+    "matches",
+    "panic",
+    "unreachable",
+    "write",
+    "writeln",
+];
+
+/// The only derives a doctest may use, by bare name (D46).
+const DERIVES: [&str; 9] = [
+    "Debug",
+    "Clone",
+    "Copy",
+    "PartialEq",
+    "Eq",
+    "PartialOrd",
+    "Ord",
+    "Hash",
+    "Default",
+];
 
 struct Listed {
     file: String,
@@ -80,12 +116,10 @@ pub fn check(cargo: &OsStr, root: &Path) -> Result<(usize, Vec<String>), String>
         if block.ignored() {
             continue;
         }
-        match lowering_attributes(&block.code) {
-            Ok(found) if found.is_empty() => {}
-            Ok(found) => problems.push(format!(
-                "{at} sets a lint level with {}. Doctests may not use allow, expect or warn, because they lift deny(warnings) (D44).",
-                found.join(", ")
-            )),
+        match scan(&block.code) {
+            Ok(found) => {
+                problems.extend(found.into_iter().map(|problem| format!("{at} {problem}")))
+            }
             Err(e) => problems.push(format!("{at} does not tokenize: {e}")),
         }
     }
@@ -315,37 +349,220 @@ fn closes(trimmed: &str, fence: &str) -> bool {
     run >= fence.len() && trimmed[run..].trim().is_empty()
 }
 
-/// Every attribute in `code` that holds allow, expect or warn followed by a
-/// parenthesized list, at any depth, including inside cfg_attr. Code is
-/// tokenized, so comments and string literals never count.
-fn lowering_attributes(code: &str) -> Result<Vec<String>, proc_macro2::LexError> {
-    let stream: TokenStream = code.parse()?;
-    let mut found = Vec::new();
-    collect_lowering(stream, &mut found);
-    Ok(found)
+/// rustdoc's hidden-line rule, so the scan sees the code rustdoc compiles.
+/// Read from `map_line` and `Line::for_code` in src/librustdoc/html/markdown.rs
+/// of rust-lang/rust at tag 1.100.0 (commit
+/// 0ef1bc386059596dada8fb65b50425aab2ea637a): a line whose trimmed start is
+/// `##` has its first `##` replaced by `#`, a trimmed line starting with `# `
+/// keeps what follows that prefix, a trimmed line equal to `#` becomes empty,
+/// and every other line stays as it is.
+fn compiled_line(line: &str) -> Cow<'_, str> {
+    let trimmed = line.trim();
+    if trimmed.starts_with("##") {
+        Cow::Owned(line.replacen("##", "#", 1))
+    } else if let Some(rest) = trimmed.strip_prefix("# ") {
+        Cow::Borrowed(rest)
+    } else if trimmed == "#" {
+        Cow::Borrowed("")
+    } else {
+        Cow::Borrowed(line)
+    }
 }
 
-fn collect_lowering(stream: TokenStream, found: &mut Vec<String>) {
+fn compiled_code(code: &str) -> String {
+    code.lines()
+        .map(compiled_line)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// One line per D44 or D46 problem in a doctest's code. The code is tokenized
+/// after hidden lines are restored, so comments and string literals never
+/// count and nothing rustdoc compiles is skipped.
+fn scan(code: &str) -> Result<Vec<String>, LexError> {
+    let stream: TokenStream = compiled_code(code).parse()?;
+    let mut problems = Vec::new();
+    scan_stream(stream, &mut problems);
+    Ok(problems)
+}
+
+fn scan_stream(stream: TokenStream, problems: &mut Vec<String>) {
     let tokens: Vec<TokenTree> = stream.into_iter().collect();
-    for (index, token) in tokens.iter().enumerate() {
-        match token {
-            TokenTree::Punct(pound) if pound.as_char() == '#' => {
-                let bang = matches!(tokens.get(index + 1), Some(TokenTree::Punct(p)) if p.as_char() == '!');
-                let body = tokens.get(index + 1 + usize::from(bang));
-                if let Some(TokenTree::Group(group)) = body
-                    && group.delimiter() == Delimiter::Bracket
-                    && lowers(group.stream())
-                {
-                    let inner = if bang { "!" } else { "" };
-                    found.push(format!("#{inner}[{}]", group.stream()));
+    let mut index = 0;
+    while index < tokens.len() {
+        if let Some((content, inner, next)) = attribute_at(&tokens, index) {
+            problems.extend(attribute_problem(content, inner));
+            index = next;
+            continue;
+        }
+        match &tokens[index] {
+            TokenTree::Ident(ident) if is_punct(tokens.get(index + 1), '!') => {
+                if ident.unraw() == "macro_rules" {
+                    let name = tokens
+                        .get(index + 2)
+                        .map(ToString::to_string)
+                        .unwrap_or_default();
+                    problems.push(format!(
+                        "defines a macro with macro_rules! {name}, which doctests may not do (D46)."
+                    ));
+                } else if matches!(tokens.get(index + 2), Some(TokenTree::Group(_))) {
+                    problems.extend(macro_call_problem(&tokens, index, ident));
                 }
             }
-            TokenTree::Group(group) => collect_lowering(group.stream(), found),
+            TokenTree::Ident(ident) if ident == "use" => {
+                let end = (index + 1..tokens.len())
+                    .find(|i| is_punct(tokens.get(*i), ';'))
+                    .unwrap_or(tokens.len());
+                problems.extend(use_problems(&tokens[index + 1..end]));
+            }
+            TokenTree::Group(group) => scan_stream(group.stream(), problems),
             _ => {}
+        }
+        index += 1;
+    }
+}
+
+fn is_punct(token: Option<&TokenTree>, mark: char) -> bool {
+    matches!(token, Some(TokenTree::Punct(p)) if p.as_char() == mark)
+}
+
+/// An attribute starting at `index`: its content, whether it is inner, and
+/// the index after it.
+fn attribute_at(tokens: &[TokenTree], index: usize) -> Option<(TokenStream, bool, usize)> {
+    if !is_punct(tokens.get(index), '#') {
+        return None;
+    }
+    let inner = is_punct(tokens.get(index + 1), '!');
+    let body = index + 1 + usize::from(inner);
+    match tokens.get(body) {
+        Some(TokenTree::Group(group)) if group.delimiter() == Delimiter::Bracket => {
+            Some((group.stream(), inner, body + 1))
+        }
+        _ => None,
+    }
+}
+
+fn attribute_problem(content: TokenStream, inner: bool) -> Option<String> {
+    let text = format!("#{}[{content}]", if inner { "!" } else { "" });
+    if lowers(content.clone()) {
+        return Some(format!(
+            "sets a lint level with {text}. Doctests may not use allow, expect or warn, because they lift deny(warnings) (D44)."
+        ));
+    }
+    if attribute_allowed(content) {
+        return None;
+    }
+    Some(format!(
+        "uses attribute {text}, which is not on the doctest attribute allowlist (D46)."
+    ))
+}
+
+/// True for `derive(...)` of allowlisted derives, `cfg(...)` and
+/// `doc = "..."` with a string literal.
+fn attribute_allowed(content: TokenStream) -> bool {
+    let tokens: Vec<TokenTree> = content.into_iter().collect();
+    match tokens.as_slice() {
+        [TokenTree::Ident(name), TokenTree::Group(args)]
+            if args.delimiter() == Delimiter::Parenthesis =>
+        {
+            let name = name.unraw();
+            name == "cfg" || (name == "derive" && derives_allowed(args.stream()))
+        }
+        [
+            TokenTree::Ident(name),
+            TokenTree::Punct(eq),
+            TokenTree::Literal(text),
+        ] => name.unraw() == "doc" && eq.as_char() == '=' && is_string_literal(&text.to_string()),
+        _ => false,
+    }
+}
+
+/// True when every item is a bare allowlisted derive name, separated by
+/// commas, with an optional trailing comma.
+fn derives_allowed(args: TokenStream) -> bool {
+    let tokens: Vec<TokenTree> = args.into_iter().collect();
+    tokens.chunks(2).all(|pair| {
+        let name_allowed = matches!(&pair[0], TokenTree::Ident(name) if DERIVES.contains(&name.unraw().to_string().as_str()));
+        let separated = pair.get(1).is_none_or(|comma| is_punct(Some(comma), ','));
+        name_allowed && separated
+    })
+}
+
+fn is_string_literal(text: &str) -> bool {
+    text.starts_with('"')
+        || text
+            .strip_prefix('r')
+            .is_some_and(|raw| raw.trim_start_matches('#').starts_with('"'))
+}
+
+/// A problem for a macro call at `index` that is not a bare allowlisted name.
+fn macro_call_problem(tokens: &[TokenTree], index: usize, name: &Ident) -> Option<String> {
+    let mut start = index;
+    while start >= 2 && is_punct(tokens.get(start - 1), ':') && is_punct(tokens.get(start - 2), ':')
+    {
+        start -= 2;
+        if start >= 1 && matches!(tokens[start - 1], TokenTree::Ident(_)) {
+            start -= 1;
+        } else {
+            break;
+        }
+    }
+    let path: String = tokens[start..=index]
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    let bare_allowed = start == index && MACROS.contains(&name.unraw().to_string().as_str());
+    if bare_allowed {
+        return None;
+    }
+    Some(format!(
+        "calls macro {path}!, which is not on the doctest macro allowlist (D46)."
+    ))
+}
+
+/// Problems in the tokens of one use item after `use`. A glob fails, and so
+/// does any name on the macro allowlist anywhere in the tree, so nothing can
+/// shadow an allowlisted macro. Tokens that are not a use tree, such as the
+/// `use<'a>` of precise capturing, are skipped.
+fn use_problems(tree: &[TokenTree]) -> Vec<String> {
+    if is_punct(tree.first(), '<') {
+        return Vec::new();
+    }
+    let mut flat = Vec::new();
+    flatten_use_tree(tree, &mut flat);
+    let text = tree.iter().cloned().collect::<TokenStream>().to_string();
+    let mut problems = Vec::new();
+    if flat.iter().any(|token| is_punct(Some(token), '*')) {
+        problems.push(format!(
+            "has a glob import, use {text}, which doctests may not use (D46)."
+        ));
+    }
+    for token in &flat {
+        if let TokenTree::Ident(name) = token
+            && MACROS.contains(&name.unraw().to_string().as_str())
+        {
+            problems.push(format!(
+                "imports or renames {name} in use {text}, a name on the doctest macro allowlist (D46)."
+            ));
+        }
+    }
+    problems
+}
+
+fn flatten_use_tree(tokens: &[TokenTree], flat: &mut Vec<TokenTree>) {
+    for token in tokens {
+        match token {
+            TokenTree::Group(group) if group.delimiter() == Delimiter::Brace => {
+                let inner: Vec<TokenTree> = group.stream().into_iter().collect();
+                flatten_use_tree(&inner, flat);
+            }
+            _ => flat.push(token.clone()),
         }
     }
 }
 
+/// True when attribute content holds allow, expect or warn followed by a
+/// parenthesized list, at any depth, including inside cfg_attr.
 fn lowers(stream: TokenStream) -> bool {
     let tokens: Vec<TokenTree> = stream.into_iter().collect();
     tokens.iter().enumerate().any(|(index, token)| match token {
@@ -360,7 +577,9 @@ fn lowers(stream: TokenStream) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{fenced_blocks, lowering_attributes, parse_list_line};
+    use super::{
+        DERIVES, MACROS, compiled_code, compiled_line, fenced_blocks, parse_list_line, scan,
+    };
 
     #[test]
     fn list_lines_parse_with_and_without_an_item_name() {
@@ -414,8 +633,79 @@ mod tests {
         assert!(blocks[1].ignored());
     }
 
+    fn problems(code: &str) -> Vec<String> {
+        scan(code).unwrap()
+    }
+
+    fn rejected_with(code: &str, text: &str) {
+        let found = problems(code);
+        assert!(
+            found.iter().any(|problem| problem.contains(text)),
+            "{code}: expected a problem containing {text:?}, got {found:?}"
+        );
+    }
+
     #[test]
-    fn lowering_attributes_are_found_at_any_depth() {
+    fn hidden_lines_are_restored_as_rustdoc_restores_them() {
+        assert_eq!(compiled_line("#"), "");
+        assert_eq!(compiled_line("  #  "), "");
+        assert_eq!(compiled_line("# let x = 1;"), "let x = 1;");
+        assert_eq!(compiled_line("   # let x = 1;"), "let x = 1;");
+        assert_eq!(compiled_line("##[derive(Debug)]"), "#[derive(Debug)]");
+        assert_eq!(compiled_line("  ## x"), "  # x");
+        assert_eq!(compiled_line("#[derive(Debug)]"), "#[derive(Debug)]");
+        assert_eq!(compiled_line("let x = 1;"), "let x = 1;");
+    }
+
+    #[test]
+    fn a_macro_call_split_by_a_hidden_line_is_seen() {
+        let code = "let s = concat\n# !(\"a\", \"b\");";
+        rejected_with(code, "calls macro concat!");
+        assert!(compiled_code(code).contains("concat\n!(\"a\", \"b\");"));
+    }
+
+    #[test]
+    fn every_allowlisted_macro_is_accepted_by_bare_name() {
+        for name in MACROS {
+            let code = format!("{name}!(x);\n{name}![x];\n{name}! {{ x }}");
+            assert!(problems(&code).is_empty(), "{code}");
+        }
+    }
+
+    #[test]
+    fn every_allowlisted_derive_is_accepted_alone_and_together() {
+        for name in DERIVES {
+            let code = format!("#[derive({name})]\nstruct S;");
+            assert!(problems(&code).is_empty(), "{code}");
+        }
+        let together = format!("#[derive({},)]\nstruct S;", DERIVES.join(", "));
+        assert!(problems(&together).is_empty(), "{together}");
+        assert!(problems("#[derive()]\nstruct S;").is_empty());
+    }
+
+    #[test]
+    fn cfg_doc_comments_and_plain_code_are_accepted() {
+        for code in [
+            "#[cfg(all())]\nfn f() {}",
+            "#![cfg(all())]",
+            "/// A doc comment.\nfn f() {}",
+            "//! An inner doc comment.",
+            "#[doc = \"text\"]\nfn f() {}",
+            "#[doc = r\"raw\"]\nfn f() {}",
+            "#[doc = r#\"raw\"#]\nfn f() {}",
+            "// #![allow(unused)] macro_rules! m {} use x::*;\nlet a = 1;",
+            "let s = \"#![allow(unused)] include!(x) use x::*;\";",
+            "use std::fmt::Write as _;\nlet mut out = String::new();\nwrite!(out, \"a\");",
+            "fn f<'a>(x: &'a u8) -> impl Sized + use<'a> { x }",
+            "let b = a != c;",
+            "let n = a # b;",
+        ] {
+            assert!(problems(code).is_empty(), "{code}: {:?}", problems(code));
+        }
+    }
+
+    #[test]
+    fn lowering_attributes_keep_their_d44_message() {
         for code in [
             "#![allow(unused)]",
             "#![allow(warnings)]",
@@ -426,24 +716,92 @@ mod tests {
             "# #![allow(unused)]\nlet x = 1;",
             "#[r#allow(dead_code)]\nfn f() {}",
         ] {
-            assert_eq!(lowering_attributes(code).unwrap().len(), 1, "{code}");
+            rejected_with(code, "sets a lint level with");
+            rejected_with(code, "(D44).");
         }
     }
 
     #[test]
-    fn the_word_in_comments_strings_and_other_attributes_does_not_count() {
-        for code in [
-            "// #![allow(unused)]\nlet x = 1;",
-            "let s = \"#![allow(unused)]\";",
-            "#![deny(warnings)]\n#[cfg(feature = \"allow\")]\nfn f() {}",
-            "let allow = 1;\nlet _ = allow;",
+    fn macros_off_the_allowlist_are_rejected() {
+        let lvl = "macro_rules! lvl { ($l:ident) => { #[$l(unused_variables)] fn f() { let x = 1; } }; }\nlvl!(allow);\nf();";
+        rejected_with(lvl, "defines a macro with macro_rules! lvl");
+        rejected_with(lvl, "calls macro lvl!");
+        for (code, text) in [
+            ("include!(\"x.rs\");", "calls macro include!"),
+            (
+                "let s = include_str!(\"x.md\");",
+                "calls macro include_str!",
+            ),
+            ("let s = concat!(\"a\", \"b\");", "calls macro concat!"),
+            ("unknown_macro!();", "calls macro unknown_macro!"),
+            ("std::assert_eq!(1, 1);", "calls macro std::assert_eq!"),
+            ("core::panic!(\"x\");", "calls macro core::panic!"),
+            ("::core::panic!(\"x\");", "calls macro ::core::panic!"),
+            (
+                "let v = vec![unknown_macro!()];",
+                "calls macro unknown_macro!",
+            ),
         ] {
-            assert!(lowering_attributes(code).unwrap().is_empty(), "{code}");
+            rejected_with(code, text);
+            rejected_with(code, "(D46).");
         }
+    }
+
+    #[test]
+    fn macro_rules_is_rejected_at_any_depth() {
+        rejected_with(
+            "macro_rules! m { () => {} }",
+            "defines a macro with macro_rules! m",
+        );
+        rejected_with(
+            "fn main() {\n    macro_rules! m { () => {} }\n}",
+            "defines a macro with macro_rules! m",
+        );
+        rejected_with("macro_rules!", "defines a macro with macro_rules! ,");
+    }
+
+    #[test]
+    fn attributes_off_the_allowlist_are_rejected() {
+        for code in [
+            "#[macro_use]\nextern crate foo;",
+            "#[cfg_attr(all(), derive(Debug))]\nstruct S;",
+            "#[derive(Serialize)]\nstruct S;",
+            "#[derive(std::fmt::Debug)]\nstruct S;",
+            "#[derive(Debug Clone)]\nstruct S;",
+            "#[derive[Debug]]\nstruct S;",
+            "#[tokio::main]\nasync fn main() {}",
+            "#[test]\nfn t() {}",
+            "#[path = \"x.rs\"]\nmod m;",
+            "#[doc(hidden)]\nfn f() {}",
+            "#[doc = concat!(\"a\")]\nfn f() {}",
+            "#[doc = b\"bytes\"]\nfn f() {}",
+            "#[doc = 1]\nfn f() {}",
+            "#[doc + \"x\"]\nfn f() {}",
+            "#[cfg = \"x\"]\nfn f() {}",
+            "#[cfg]\nfn f() {}",
+            "# #[derive(Serialize)]\nstruct S;",
+            "##[test]\nfn t() {}",
+        ] {
+            rejected_with(
+                code,
+                "which is not on the doctest attribute allowlist (D46).",
+            );
+        }
+    }
+
+    #[test]
+    fn use_items_that_glob_or_shadow_are_rejected() {
+        rejected_with("use foo::*;", "has a glob import, use foo ::*");
+        rejected_with("use foo::{bar, *};", "has a glob import");
+        rejected_with("use foo::bar as assert_eq;", "imports or renames assert_eq");
+        rejected_with("use foo::assert_eq;", "imports or renames assert_eq");
+        rejected_with("use foo::{bar, vec};", "imports or renames vec");
+        rejected_with("use foo::r#format;", "imports or renames r#format");
+        rejected_with("use foo::vec", "imports or renames vec");
     }
 
     #[test]
     fn code_that_does_not_tokenize_is_an_error() {
-        assert!(lowering_attributes("let s = \"open;").is_err());
+        assert!(scan("let s = \"open;").is_err());
     }
 }
