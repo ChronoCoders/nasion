@@ -19,9 +19,12 @@
 //! - Every file rustc reads for a library target, on the host and on each
 //!   cross target, is a `.rs` file that check scans (D50). The `dep_info`
 //!   module holds that check.
-//! - The proc macros in the build graph are exactly an allowlist, by name and
-//!   version, and no workspace member has a proc-macro target (D52). The
-//!   `proc_macros` module holds that check.
+//! - No workspace member has a proc-macro target (D52), and every crate that
+//!   runs inside a proc macro is pinned by name, version, source and checksum
+//!   (D53). The `proc_macros` module holds that check.
+//! - No workspace manifest has a `[patch]` or `[replace]` table, and no cargo
+//!   config or environment variable can swap where package code comes from
+//!   (D53). The `cargo_sources` module holds that check.
 //!
 //! The target kind comes from cargo metadata, never from the file name.
 //!
@@ -29,6 +32,7 @@
 //! attribute or a doctest lowers a lint level, 2 the check could not run.
 #![deny(unsafe_code)]
 
+mod cargo_sources;
 mod dep_info;
 mod doc_attributes;
 mod doctests;
@@ -64,6 +68,7 @@ enum Level {
 
 struct Target {
     package: String,
+    manifest: PathBuf,
     kinds: Vec<String>,
     src_path: PathBuf,
 }
@@ -98,7 +103,19 @@ fn check_workspace() -> Result<Vec<String>, String> {
             "cargo metadata listed no targets. Check the workspace members in Cargo.toml.".into(),
         );
     }
-    let mut missing = Vec::new();
+    let mut manifests = vec![root.join("Cargo.toml")];
+    manifests.extend(targets.iter().map(|target| target.manifest.clone()));
+    manifests.sort();
+    manifests.dedup();
+    let sources = cargo_sources::check(&root, &manifests)?;
+    if !sources.configs.is_empty() {
+        return Ok(sources
+            .manifests
+            .into_iter()
+            .chain(sources.configs)
+            .collect());
+    }
+    let mut missing = sources.manifests;
     for target in &targets {
         missing.extend(check_target(target)?);
     }
@@ -121,6 +138,7 @@ fn check_workspace() -> Result<Vec<String>, String> {
     missing.extend(problems);
     let (proc_macro_count, problems) = proc_macros::check(&cargo, &root)?;
     missing.extend(problems);
+
     if missing.is_empty() {
         writeln!(
             io::stdout().lock(),
@@ -196,6 +214,10 @@ fn workspace_targets(cargo: &OsString) -> Result<(PathBuf, Vec<Target>), String>
         let name = package["name"]
             .as_str()
             .ok_or("a package in cargo metadata has no name")?;
+        let manifest = package["manifest_path"]
+            .as_str()
+            .map(PathBuf::from)
+            .ok_or_else(|| format!("package {name} in cargo metadata has no manifest_path"))?;
         let package_targets = package["targets"]
             .as_array()
             .ok_or_else(|| format!("package {name} in cargo metadata has no targets list"))?;
@@ -219,6 +241,7 @@ fn workspace_targets(cargo: &OsString) -> Result<(PathBuf, Vec<Target>), String>
                 })?;
             targets.push(Target {
                 package: name.to_owned(),
+                manifest: manifest.clone(),
                 kinds,
                 src_path: PathBuf::from(src_path),
             });
