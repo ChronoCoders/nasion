@@ -7,8 +7,10 @@
 //!   `#![forbid(unsafe_code)]`, which no `allow` further down can lift.
 //! - Every other target root needs `#![deny(unsafe_code)]` or the stricter
 //!   `#![forbid(unsafe_code)]` (D29).
-//! - Library roots also need `#![doc(test(attr(forbid(unsafe_code))))]`,
-//!   because crate lints do not reach doctests.
+//! - Library roots also need `forbid(unsafe_code)` and `deny(warnings)` inside
+//!   a crate-level `doc(test(attr(...)))`, in one attribute or two (D31, D39).
+//!   Crate lints do not reach doctests, and rustdoc adds `allow(unused)` to
+//!   them.
 //!
 //! The target kind comes from cargo metadata, never from the file name.
 //!
@@ -33,7 +35,9 @@ const BUILD_MACHINE_KINDS: [&str; 2] = ["custom-build", "proc-macro"];
 /// Target kinds rustdoc can run doctests for, now or after a crate-type change.
 const LIBRARY_KINDS: [&str; 6] = ["lib", "rlib", "dylib", "cdylib", "staticlib", "proc-macro"];
 
-const DOCTEST_FORBID: &str = "#![doc(test(attr(forbid(unsafe_code))))]";
+/// The `level(lint)` pairs every library root sets for its doctests.
+const DOCTEST_LINTS: [(&str, &str); 2] = [("forbid", "unsafe_code"), ("deny", "warnings")];
+const DOCTEST_ATTRIBUTE: &str = "#![doc(test(attr(forbid(unsafe_code), deny(warnings))))]";
 
 #[derive(Clone, Copy, PartialEq, PartialOrd)]
 enum Level {
@@ -110,8 +114,14 @@ fn check_target(target: &Target) -> Result<Vec<String>, String> {
             "{described} lacks a crate-level #![deny(unsafe_code)]"
         ));
     }
-    if target.has_kind(&LIBRARY_KINDS) && !forbids_unsafe_in_doctests(&file).map_err(parse_error)? {
-        missing.push(format!("{described} lacks a crate-level {DOCTEST_FORBID}"));
+    if target.has_kind(&LIBRARY_KINDS) {
+        for (level, lint) in DOCTEST_LINTS {
+            if !doctests_set(&file, level, lint).map_err(parse_error)? {
+                missing.push(format!(
+                    "{described} lacks {level}({lint}) in a crate-level doc(test(attr(...))). Write {DOCTEST_ATTRIBUTE}"
+                ));
+            }
+        }
     }
     Ok(missing)
 }
@@ -208,13 +218,14 @@ fn unsafe_code_level(file: &syn::File) -> syn::Result<Option<Level>> {
     Ok(strongest)
 }
 
-/// True when a crate-level `doc(test(attr(...)))` holds `forbid(unsafe_code)`.
-/// deny does not count, because a doctest can lift it with its own allow.
-fn forbids_unsafe_in_doctests(file: &syn::File) -> syn::Result<bool> {
+/// True when a crate-level `doc(test(attr(...)))` holds `level(lint)`. Only the
+/// exact level counts, so `deny(unsafe_code)`, which a doctest can lift with
+/// its own allow, does not stand in for `forbid(unsafe_code)`.
+fn doctests_set(file: &syn::File, level: &str, lint: &str) -> syn::Result<bool> {
     for attr in &file.attrs {
         if let Meta::List(doc) = &attr.meta
             && doc.path.is_ident("doc")
-            && holds_nested(doc, &["test", "attr", "forbid"], "unsafe_code")?
+            && holds_nested(doc, &["test", "attr", level], lint)?
         {
             return Ok(true);
         }
@@ -242,14 +253,22 @@ fn holds_nested(list: &MetaList, names: &[&str], leaf: &str) -> syn::Result<bool
 
 #[cfg(test)]
 mod tests {
-    use super::{Level, forbids_unsafe_in_doctests, unsafe_code_level};
+    use super::{Level, doctests_set, unsafe_code_level};
 
     fn level(source: &str) -> Option<Level> {
         unsafe_code_level(&syn::parse_file(source).unwrap()).unwrap()
     }
 
+    fn doctests(source: &str, level: &str, lint: &str) -> bool {
+        doctests_set(&syn::parse_file(source).unwrap(), level, lint).unwrap()
+    }
+
     fn doctests_forbid(source: &str) -> bool {
-        forbids_unsafe_in_doctests(&syn::parse_file(source).unwrap()).unwrap()
+        doctests(source, "forbid", "unsafe_code")
+    }
+
+    fn doctests_deny_warnings(source: &str) -> bool {
+        doctests(source, "deny", "warnings")
     }
 
     #[test]
@@ -276,11 +295,12 @@ mod tests {
             "/* #![forbid(unsafe_code)] */",
             "// #![deny(unsafe_code)]",
             "pub const MARK: &str = \"#![forbid(unsafe_code)]\";",
-            "/* #![doc(test(attr(forbid(unsafe_code))))] */",
-            "pub const MARK: &str = \"#![doc(test(attr(forbid(unsafe_code))))]\";",
+            "/* #![doc(test(attr(forbid(unsafe_code), deny(warnings))))] */",
+            "pub const MARK: &str = \"#![doc(test(attr(forbid(unsafe_code), deny(warnings))))]\";",
         ] {
             assert!(level(source).is_none(), "{source}");
             assert!(!doctests_forbid(source), "{source}");
+            assert!(!doctests_deny_warnings(source), "{source}");
         }
     }
 
@@ -298,25 +318,42 @@ mod tests {
     }
 
     #[test]
-    fn doctest_forbid_counts_alone_or_with_other_settings() {
-        assert!(doctests_forbid("#![doc(test(attr(forbid(unsafe_code))))]"));
-        assert!(doctests_forbid(
-            "#![doc(html_root_url = \"x\", test(no_crate_inject, attr(deny(warnings), forbid(dead_code, unsafe_code))))]"
-        ));
+    fn doctest_lints_count_in_one_list_two_attributes_or_either_order() {
+        for source in [
+            "#![doc(test(attr(forbid(unsafe_code), deny(warnings))))]",
+            "#![doc(test(attr(deny(warnings), forbid(unsafe_code))))]",
+            "#![doc(test(attr(forbid(unsafe_code))))]\n#![doc(test(attr(deny(warnings))))]",
+            "#![doc(test(attr(deny(warnings))))]\n#![doc(test(attr(forbid(unsafe_code))))]",
+            "#![doc(html_root_url = \"x\", test(no_crate_inject, attr(deny(dead_code, warnings), forbid(unsafe_code))))]",
+        ] {
+            assert!(doctests_forbid(source), "{source}");
+            assert!(doctests_deny_warnings(source), "{source}");
+        }
+    }
+
+    #[test]
+    fn each_doctest_lint_is_required_on_its_own() {
+        let forbid_only = "#![doc(test(attr(forbid(unsafe_code))))]";
+        assert!(doctests_forbid(forbid_only));
+        assert!(!doctests_deny_warnings(forbid_only));
+        let deny_only = "#![doc(test(attr(deny(warnings))))]";
+        assert!(!doctests_forbid(deny_only));
+        assert!(doctests_deny_warnings(deny_only));
     }
 
     #[test]
     fn doctest_attribute_that_is_weaker_or_misplaced_does_not_count() {
         for source in [
-            "#![doc(test(attr(deny(unsafe_code))))]",
-            "#![doc(test(forbid(unsafe_code)))]",
-            "#![doc(attr(forbid(unsafe_code)))]",
-            "#![forbid(unsafe_code)]",
-            "#![cfg_attr(all(), doc(test(attr(forbid(unsafe_code)))))]",
-            "#![doc = \"test(attr(forbid(unsafe_code)))\"]",
-            "#[doc(test(attr(forbid(unsafe_code))))]\nfn f() {}",
+            "#![doc(test(attr(deny(unsafe_code), warn(warnings))))]",
+            "#![doc(test(forbid(unsafe_code), deny(warnings)))]",
+            "#![doc(attr(forbid(unsafe_code), deny(warnings)))]",
+            "#![forbid(unsafe_code)]\n#![deny(warnings)]",
+            "#![cfg_attr(all(), doc(test(attr(forbid(unsafe_code), deny(warnings)))))]",
+            "#![doc = \"test(attr(forbid(unsafe_code), deny(warnings)))\"]",
+            "#[doc(test(attr(forbid(unsafe_code), deny(warnings))))]\nfn f() {}",
         ] {
             assert!(!doctests_forbid(source), "{source}");
+            assert!(!doctests_deny_warnings(source), "{source}");
         }
     }
 
@@ -324,6 +361,6 @@ mod tests {
     fn source_that_does_not_parse_is_an_error() {
         assert!(syn::parse_file("fn main( {").is_err());
         let file = syn::parse_file("#![doc(test(attr(forbid(=))))]").unwrap();
-        assert!(forbids_unsafe_in_doctests(&file).is_err());
+        assert!(doctests_set(&file, "forbid", "unsafe_code").is_err());
     }
 }

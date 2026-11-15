@@ -1,6 +1,6 @@
 //! Python binding for Nasion, exposed as `nasion._nasion`. Holds no domain logic yet.
 #![deny(unsafe_code)]
-#![doc(test(attr(forbid(unsafe_code))))]
+#![doc(test(attr(forbid(unsafe_code), deny(warnings))))]
 
 use pyo3::prelude::*;
 
