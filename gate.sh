@@ -39,7 +39,8 @@ venv_tool() {
 
 # shellcheck disable=SC2329 # Called through step, which shellcheck does not follow.
 python_tests() {
-    venv_tool maturin develop --locked --uv --quiet || return
+    # Without --quiet, because --quiet also hides cargo's warnings.
+    fail_on_warnings venv_tool maturin develop --locked --uv || return
     venv_tool pytest -q
 }
 
@@ -72,12 +73,12 @@ banned_names() {
 # nothing it checked.
 tree_before=$(python3 -I -c "$TREE_STATE_PY" snapshot 2>&1)
 
-step "cargo fmt" cargo fmt --all --check
+step "cargo fmt" fail_on_warnings cargo fmt --all --check
 step "cargo clippy" check_cargo_lints_warning cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
-step "cargo test" cargo test --locked --workspace
+step "cargo test" fail_on_warnings cargo test --locked --workspace
 step "miri" check_unsafe_allow
 step "deny unsafe" check_deny_unsafe
-step "cargo audit" cargo audit --deny warnings --file Cargo.lock
+step "cargo audit" fail_on_warnings cargo audit --deny warnings --file Cargo.lock
 step "ruff check" venv_tool ruff check python
 step "ruff format" venv_tool ruff format --check python
 step "mypy" venv_tool mypy --strict python

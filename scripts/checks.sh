@@ -115,7 +115,7 @@ print(match.group(1))
 '
 
 check_unsafe_allow() {
-    local version host_lines hosts=() host shown sysroot python target output status worst=0 failed=()
+    local version host_lines hosts=() host shown sysroot python target output status worst=0 unsafe_targets=()
     if ! version=$(rustc -vV); then
         echo "rustc -vV failed. Check that the toolchain in rust-toolchain.toml is installed."
         return 2
@@ -159,16 +159,24 @@ check_unsafe_allow() {
         local target_args=()
         [[ $target != "$HOST_TARGET" ]] && target_args=(--target "$target")
         output=$(PYO3_CROSS_PYTHON_VERSION=$python RUSTFLAGS="-F unsafe_code" \
-            CARGO_TARGET_DIR="target/forbid-check-$target" \
+            CARGO_TARGET_DIR="target/forbid-check-$target" CARGO_TERM_COLOR=never \
             cargo check --locked --workspace --all-targets --all-features "${target_args[@]}" 2>&1)
         status=$?
-        ((status == 0)) && continue
+        if ((status == 0)); then
+            warning_lines "$output" "cargo check for $target"
+            case $? in
+                0) ;;
+                1) worst=$((worst > 1 ? worst : 1)) ;;
+                *) worst=2 ;;
+            esac
+            continue
+        fi
         echo "$output"
         LC_ALL=C grep -q -F 'unsafe_code' <<<"$output"
         case $? in
             0)
                 echo "Unsafe code compiles for $target."
-                failed+=("$target")
+                unsafe_targets+=("$target")
                 worst=$((worst > 1 ? worst : 1))
                 ;;
             1)
@@ -185,7 +193,7 @@ check_unsafe_allow() {
         echo "note: no unsafe"
         return 0
     fi
-    if ((${#failed[@]} > 0)); then
+    if ((${#unsafe_targets[@]} > 0)); then
         echo "Miri is not set up. Record a decision that pins its nightly toolchain and add it to the gate."
     fi
     return "$worst"
@@ -246,11 +254,25 @@ sys.exit(1 if stray else 0)
 # targets come from cargo metadata, never from a fixed list, and every
 # Cargo.toml on disk must belong to a member so none escapes that list.
 check_deny_unsafe() {
-    local meta missing stray status
-    if ! meta=$(cargo metadata --no-deps --format-version 1); then
+    local meta meta_err missing stray status output warned=0
+    if ! meta_err=$(mktemp); then
+        echo "mktemp failed, so the stderr of cargo metadata cannot be kept. Check that the temporary directory is writable."
+        return 2
+    fi
+    meta=$(CARGO_TERM_COLOR=never cargo metadata --no-deps --format-version 1 2>"$meta_err")
+    status=$?
+    output=$(<"$meta_err")
+    rm -f "$meta_err"
+    echo "$output"
+    if ((status != 0)); then
         echo "cargo metadata failed. Check that every Cargo.toml in the workspace parses and that every directory under crates/ holds a Cargo.toml."
         return 2
     fi
+    warning_lines "$output" "cargo metadata"
+    case $? in
+        1) warned=1 ;;
+        2) return 2 ;;
+    esac
     if ! missing=$(python3 -I -c "$LINTS_INHERIT_PY" <<<"$meta"); then
         echo "Reading cargo metadata or a member Cargo.toml failed. Check the output above."
         return 2
@@ -262,16 +284,24 @@ check_deny_unsafe() {
         return 2
     fi
     missing+=${stray:+${missing:+$'\n'}$stray}
-    cargo run --locked --quiet -p nasion-xtask
+    # Without --quiet, because --quiet also hides cargo's warnings.
+    output=$(CARGO_TERM_COLOR=never cargo run --locked -p nasion-xtask 2>&1)
     status=$?
+    echo "$output"
     if ((status > 1)); then
         echo "nasion-xtask could not check the target roots (exit $status). Check the output above."
         return 2
     fi
+    warning_lines "$output" "cargo run -p nasion-xtask"
+    case $? in
+        1) warned=1 ;;
+        2) return 2 ;;
+    esac
     if [[ -n $missing ]]; then
         echo "$missing"
         return 1
     fi
+    ((status == 0)) && return "$warned"
     return "$status"
 }
 
@@ -341,19 +371,58 @@ check_tree_unchanged() {
     return "$status"
 }
 
-# Runs a cargo command and also fails when cargo warns that a member does not
-# inherit [workspace.lints]. cargo prints that as a plain warning, which
-# -D warnings does not turn into an error.
+# A warning line as cargo, rustc, rustfmt and uv print it, with an optional
+# lint code, or as maturin prints it, after a warning sign emoji.
+WARNING_SIGN=$(printf '\xe2\x9a\xa0\xef\xb8\x8f')
+WARNING_LINE_RE="^(${WARNING_SIGN} +)?(warning|Warning)(\\[[^]]*\\])?:"
+
+# Prints the warning lines in $1, the output of the command named in $2.
+# Returns 0 when there are none, 1 when there are some and 2 when the search
+# failed.
+warning_lines() {
+    local found
+    found=$(LC_ALL=C grep -E "$WARNING_LINE_RE" <<<"$1")
+    case $? in
+        0)
+            echo "$2 printed warnings. Fix each one at its source:"
+            echo "$found"
+            return 1
+            ;;
+        1) return 0 ;;
+        *)
+            echo "Searching the output of $2 for warnings failed. Check that grep works."
+            return 2
+            ;;
+    esac
+}
+
+# Runs a command with cargo colour off, so colour codes cannot hide a warning,
+# and fails it when it prints one. Returns 2 when the search failed, else the
+# command's status when it failed, else 1 when it printed a warning.
+fail_on_warnings() {
+    local output status warned
+    output=$(CARGO_TERM_COLOR=never "$@" 2>&1)
+    status=$?
+    echo "$output"
+    warning_lines "$output" "$*"
+    warned=$?
+    ((warned == 2)) && return 2
+    ((status != 0)) && return "$status"
+    return "$warned"
+}
+
+# Like fail_on_warnings, and names the fix when cargo warns that a member does
+# not inherit [workspace.lints].
 check_cargo_lints_warning() {
     local output status
-    output=$("$@" 2>&1)
+    output=$(fail_on_warnings "$@")
     status=$?
     echo "$output"
     LC_ALL=C grep -F "missing \`[lints]\` to inherit \`[workspace.lints]\`" <<<"$output" >/dev/null
     search_result $? "search for the cargo [lints] warning" || {
         local search=$?
         ((search == 1)) && echo "A member does not inherit [workspace.lints]. Add [lints] workspace = true to its Cargo.toml."
-        return "$search"
+        ((search == 2)) && return 2
     }
     return "$status"
 }
