@@ -82,6 +82,9 @@
 
   .about { display: grid; grid-template-columns: 250px 1fr; gap: 32px; align-items: center; }
   .about p { margin: 0; font-size: 17px; max-width: 700px; }
+  .about p + .head { margin-top: 28px; }
+  .about p + details { margin-top: 14px; }
+  .about details p { margin-top: 10px; font-size: 14px; }
 
   footer { background: var(--navy-deep); color: #c5d1de; font-size: 14px; padding: 40px 0 32px; }
   footer .cols { display: grid; grid-template-columns: 1fr 1fr 2fr; gap: 28px; }
@@ -161,6 +164,17 @@
   </div>
 </div>
 
+<section id="why">
+  <div class="wrap">
+    <div class="head"><h2>Why Nasion Exists</h2></div>
+    <p>In a 2022 study of stroke patients, the eye and muscle signals hiding in the EEG predicted movement better than the brain activity did. Nasion is built to catch that trap in any tool you run through it.</p>
+    <details>
+      <summary>Technical details</summary>
+      <p>McDermott et al., "Artifacts in EEG-Based BCI Therapies: Friend or Foe?", Sensors 22(1):96, 2022.</p>
+    </details>
+  </div>
+</section>
+
 <section id="notes">
   <div class="wrap">
     <div class="head"><h2>Project Notes</h2></div>
@@ -203,10 +217,10 @@
       <article class="card">
         <div class="tags"><span class="tag">Test</span><span class="tag access">Open Access</span><span class="tag state">Sample</span></div>
         <h3>Imagined Movement</h3>
-        <p>Picture moving your left hand, then your right. A good tool can tell which one you imagined, and we check that on public recordings from 109 volunteers.</p>
+        <p>MOABB already ranks the best motor imagery pipelines on public recordings. We take those same pipelines and find out how much of each score is still standing once the brain is pulled out of the signal.</p>
         <details>
           <summary>Technical details</summary>
-          <p>Source is the EEG Motor Movement/Imagery Dataset on PhysioNet, with over 1500 one-minute and two-minute recordings at 64 channels and 160 samples per second in EDF+ format. Both classes come from the same imagery runs, so recording blocks never separate them.</p>
+          <p>Pipelines from MOABB 1.7.2 (NeuroTechX, BSD license). Data is the EEG Motor Movement/Imagery Dataset on PhysioNet, 109 volunteers at 64 channels in EDF+, sampled at 160 Hz except the imagery runs of subjects 88, 92 and 100, which are at 128 Hz and are resampled to 160 Hz as MOABB does.</p>
         </details>
       </article>
       <article class="card">
@@ -272,6 +286,12 @@
     <div>
       <div class="head"><h2>About the Name</h2></div>
       <p>The nasion is the dip at the top of your nose, the point EEG electrode positions are measured from. Nasion gives brain signal software the same kind of fixed starting point.</p>
+      <div class="head"><h2>Built on Open Science</h2></div>
+      <p>Nasion stands on work other people did first, and we name every piece of it. The control method comes from Görgen and colleagues, the pipelines from MOABB and the recordings from PhysioNet.</p>
+      <details>
+        <summary>Technical details</summary>
+        <p>Görgen, Hebart, Allefeld, Haynes, NeuroImage 180 (2018) 19-30. MOABB, NeuroTechX. EEG Motor Movement/Imagery Dataset, PhysioNet, ODC-By 1.0.</p>
+      </details>
     </div>
   </div>
 </section>
