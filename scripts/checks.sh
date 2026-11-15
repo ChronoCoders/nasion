@@ -473,6 +473,193 @@ check_clippy() {
     return "$worst"
 }
 
+# The Python environment is locked and built by the gate (D28, D54). uv.lock
+# holds every package with its file hashes; uv itself is pinned by
+# required-version in pyproject.toml and the interpreter by .python-version.
+# Read in astral-sh/uv at tag 0.12.1:
+# - docs/concepts/projects/sync.md: uv lock --check fails when uv.lock does not
+#   match pyproject.toml ("equivalent to the --locked flag"), --locked never
+#   updates uv.lock, and uv sync is exact by default, removing packages that
+#   are not in the lockfile.
+# - docs/concepts/python-versions.md: uv reads the .python-version file in the
+#   project to choose the interpreter.
+# - crates/uv-settings/src/settings.rs, required-version: a uv that does not
+#   meet it exits with an error.
+# - docs/concepts/indexes.md: uv records one hash per distribution in the
+#   lockfile when the index advertises it. The docs do not promise one for
+#   every file, so UV_LOCK_HASHES_PY checks that every registry file has one.
+UV_LOCK_HASHES_PY='
+import re
+import sys
+import tomllib
+
+try:
+    with open("uv.lock", "rb") as lock:
+        packages = tomllib.load(lock).get("package")
+except (OSError, tomllib.TOMLDecodeError) as error:
+    print("Reading uv.lock failed:", error)
+    sys.exit(2)
+if not isinstance(packages, list) or not packages:
+    print("uv.lock has no [[package]] entries. Run uv lock.")
+    sys.exit(2)
+sha256 = re.compile(r"sha256:[0-9a-f]{64}")
+problems = []
+for package in packages:
+    name = package.get("name", "an unnamed package")
+    version = package.get("version", "with no version")
+    if "registry" not in package.get("source", {}):
+        continue
+    files = [("sdist", package["sdist"])] if "sdist" in package else []
+    files += [("wheel", wheel) for wheel in package.get("wheels", [])]
+    if not files:
+        problems.append(f"{name} {version} comes from a registry, but uv.lock lists no file for it.")
+    for kind, entry in files:
+        digest = entry.get("hash") if isinstance(entry, dict) else None
+        url = entry.get("url", "with no url") if isinstance(entry, dict) else entry
+        if not isinstance(digest, str) or sha256.fullmatch(digest) is None:
+            problems.append(f"{name} {version} has a {kind} without a sha256 hash in uv.lock: {url}")
+for problem in problems:
+    print(problem)
+sys.exit(1 if problems else 0)
+'
+
+# Builds .venv from uv.lock: the lock must match pyproject.toml and carry a
+# hash for every registry file, the sync is exact and never rewrites uv.lock,
+# and the interpreter must be the one .python-version pins. The local package
+# is left to maturin develop in the pytest step.
+check_python_env() {
+    local pinned found status
+    if ! command -v uv >/dev/null; then
+        echo "uv is not on PATH. Install the uv version that required-version in pyproject.toml names."
+        return 2
+    fi
+    fail_on_warnings uv lock --check
+    status=$?
+    if ((status != 0)); then
+        echo "uv lock --check failed (exit $status). If pyproject.toml changed on purpose, run uv lock and commit uv.lock."
+        return 1
+    fi
+    python3 -I -c "$UV_LOCK_HASHES_PY" || return
+    fail_on_warnings uv sync --locked --no-install-project --no-default-groups --group dev
+    status=$?
+    if ((status != 0)); then
+        echo "uv sync --locked failed (exit $status), so .venv does not match uv.lock."
+        return 1
+    fi
+    if ! pinned=$(<.python-version); then
+        echo "Reading .python-version failed. It pins the interpreter for .venv."
+        return 2
+    fi
+    pinned=${pinned%$'\n'}
+    if ! found=$("$VIRTUAL_ENV/bin/python" -I -c 'import sys; print("%d.%d.%d" % sys.version_info[:3])'); then
+        echo "Running $VIRTUAL_ENV/bin/python failed, so its version is unknown."
+        return 2
+    fi
+    if [[ $found != "$pinned" ]]; then
+        echo "$VIRTUAL_ENV runs Python $found, but .python-version pins $pinned. Remove .venv and run the gate again, and check that UV_PYTHON is not set."
+        return 1
+    fi
+    echo "note: Python $found"
+}
+
+# Prints the locked dev group, without the local project, as a requirements
+# file. With hashes for pip-audit, without them for the venv comparison.
+export_lock() {
+    uv export --locked --quiet --format requirements-txt --no-emit-project --no-default-groups --group dev --no-header --no-annotate "$@"
+}
+
+# Compares .venv with the exported lock: every package whose marker holds here
+# must be installed at its locked version, nothing else may be installed, and
+# the local package must be installed from this tree. Run with the venv's
+# interpreter, which has packaging from the lock.
+VENV_MATCHES_LOCK_PY='
+import json
+import re
+import sys
+from importlib import metadata
+from pathlib import Path
+
+try:
+    from packaging.markers import Marker
+    from packaging.version import Version
+except ImportError as error:
+    print("packaging is not importable in .venv:", error)
+    sys.exit(2)
+
+
+def normal(name):
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+export_path, root = sys.argv[1], Path(sys.argv[2]).resolve()
+try:
+    lines = Path(export_path).read_text().splitlines()
+except OSError as error:
+    print("Reading the exported lock failed:", error)
+    sys.exit(2)
+expected = {}
+for line in lines:
+    if not line.strip():
+        continue
+    requirement, _, marker = line.partition(";")
+    name, separator, version = requirement.strip().partition("==")
+    if not separator or not name or not version or " " in version:
+        print("The exported lock has a line this check cannot read:", line)
+        sys.exit(2)
+    if marker.strip() and not Marker(marker.strip()).evaluate():
+        continue
+    expected[normal(name)] = version
+installed = {}
+local = []
+problems = []
+for dist in metadata.distributions():
+    name = normal(dist.metadata["Name"])
+    if name == "nasion":
+        local.append(dist)
+    elif name in installed:
+        problems.append(f"{name} is installed twice in .venv.")
+    else:
+        installed[name] = dist.version
+for name in sorted(expected.keys() - installed.keys()):
+    problems.append(f"{name} {expected[name]} is locked but not installed in .venv.")
+for name in sorted(installed.keys() - expected.keys()):
+    problems.append(f"{name} {installed[name]} is installed in .venv but not locked.")
+for name in sorted(expected.keys() & installed.keys()):
+    if Version(expected[name]) != Version(installed[name]):
+        problems.append(f"{name} is locked at {expected[name]}, but .venv has {installed[name]}.")
+if len(local) != 1:
+    problems.append(f"The local package nasion is installed {len(local)} times in .venv, expected once. The pytest step installs it with maturin develop.")
+else:
+    direct = local[0].read_text("direct_url.json")
+    try:
+        url = json.loads(direct).get("url") if direct else None
+    except json.JSONDecodeError as error:
+        print("Reading direct_url.json of nasion failed:", error)
+        sys.exit(2)
+    if url != root.as_uri():
+        problems.append(f"nasion in .venv comes from {url}, not from this tree at {root.as_uri()}.")
+for problem in problems:
+    print(problem)
+sys.exit(1 if problems else 0)
+'
+
+check_venv_matches_lock() {
+    local requirements status
+    if ! requirements=$(mktemp); then
+        echo "mktemp failed, so the lock cannot be exported. Check that the temporary directory is writable."
+        return 2
+    fi
+    if ! export_lock --no-hashes >"$requirements"; then
+        echo "uv export --locked failed, so .venv cannot be compared with uv.lock."
+        rm -f "$requirements"
+        return 2
+    fi
+    venv_tool python -I -c "$VENV_MATCHES_LOCK_PY" "$requirements" "$PWD"
+    status=$?
+    rm -f "$requirements"
+    return "$status"
+}
+
 # The dataset manifest does not exist yet, so neither does its hash check. A
 # manifest that appears before the check is written fails the gate.
 check_manifest() {
