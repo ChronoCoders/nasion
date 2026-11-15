@@ -11,14 +11,29 @@
 //! - An attribute whose content holds a `$` token fails, so a macro cannot
 //!   assemble `doc(test(...))` from pieces.
 //!
+//!
+//! rustc reads a file that is not `.rs` only through `#[path = "..."]` or
+//! `include!`, so three more rules close those ways in (D49):
+//!
+//! - An attribute whose content holds the ident `path` followed by `=` fails.
+//! - The ident `include` followed by `!` fails anywhere, whatever path leads
+//!   to it.
+//! - A use item that names `include` fails, so `include!` cannot be rebound.
+//!
+//! With these rules every workspace file rustc reads is a `.rs` file found by
+//! mod resolution, which the walk covers, with two exceptions these tokens
+//! cannot show: a macro that calls a macro passed in as a metavariable
+//! (`$name!`), which can be handed `include`, and a dependency's proc macro
+//! that reads a file itself.
+//!
 //! The files are tokenized, so comments and string literals never count, and
-//! every group is scanned at any depth, macro bodies included. `#[doc = "..."]`
-//! and doc comments are not affected.
+//! every group is scanned at any depth, macro bodies included. `#[doc = "..."]`,
+//! doc comments, `include_str!` and `include_bytes!` are not affected.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use proc_macro2::{Delimiter, Group, TokenStream, TokenTree};
+use proc_macro2::{Delimiter, Group, Spacing, TokenStream, TokenTree};
 use syn::ext::IdentExt;
 
 /// Directories under the workspace root that hold no workspace source.
@@ -26,7 +41,7 @@ const SKIPPED_DIRS: [&str; 3] = ["target", ".venv", ".git"];
 /// The `level(lint)` entries a crate-root `doc(test(attr(...)))` may hold.
 const ROOT_ENTRIES: [(&str, &str); 2] = [("forbid", "unsafe_code"), ("deny", "warnings")];
 
-/// One line per D48 problem in the `.rs` files under `root`. `library_roots`
+/// One line per D48 or D49 problem in the `.rs` files under `root`. `library_roots`
 /// are the source files of the targets whose kinds include a library kind.
 pub fn check(root: &Path, library_roots: &[PathBuf]) -> Result<Vec<String>, String> {
     let mut files = Vec::new();
@@ -46,8 +61,10 @@ pub fn check(root: &Path, library_roots: &[PathBuf]) -> Result<Vec<String>, Stri
             scan(&code, library_root)
                 .into_iter()
                 .map(|problem| match problem.line {
-                    Some(line) => format!("{shown}:{line} {} (D48).", problem.text),
-                    None => format!("{shown} {} (D48).", problem.text),
+                    Some(line) => {
+                        format!("{shown}:{line} {} ({}).", problem.text, problem.decision)
+                    }
+                    None => format!("{shown} {} ({}).", problem.text, problem.decision),
                 }),
         );
     }
@@ -87,9 +104,10 @@ fn walk(root: &Path, dir: &Path, files: &mut Vec<PathBuf>) -> Result<(), String>
 struct Problem {
     line: Option<usize>,
     text: String,
+    decision: &'static str,
 }
 
-/// The D48 problems in one file's code. `library_root` allows the crate-root
+/// The D48 and D49 problems in one file's code. `library_root` allows the crate-root
 /// form at the top level.
 fn scan(code: &str, library_root: bool) -> Vec<Problem> {
     match code.parse::<TokenStream>() {
@@ -101,6 +119,7 @@ fn scan(code: &str, library_root: bool) -> Vec<Problem> {
         Err(e) => vec![Problem {
             line: None,
             text: format!("does not tokenize, so its attributes cannot be checked: {e}"),
+            decision: "D48",
         }],
     }
 }
@@ -118,6 +137,17 @@ fn scan_stream(stream: TokenStream, root_level: bool, problems: &mut Vec<Problem
                         "has an attribute holding a $ token, {}, which no attribute may hold",
                         render(&tokens[index..=index + 1 + usize::from(inner)])
                     ),
+                    decision: "D48",
+                });
+            }
+            if sets_path(bracket.stream()) {
+                problems.push(Problem {
+                    line: Some(token.span().start().line),
+                    text: format!(
+                        "has an attribute that sets path, {}, which makes rustc read a file the scan does not",
+                        render(&tokens[index..=index + 1 + usize::from(inner)])
+                    ),
+                    decision: "D49",
                 });
             }
             if root_level
@@ -130,6 +160,7 @@ fn scan_stream(stream: TokenStream, root_level: bool, problems: &mut Vec<Problem
                         text: format!(
                             "has #![doc ({content})] at a library root, where doc(test(attr(...))) may hold only forbid(unsafe_code) and deny(warnings)"
                         ),
+                        decision: "D48",
                     });
                 }
                 index += 3;
@@ -147,6 +178,42 @@ fn scan_stream(stream: TokenStream, root_level: bool, problems: &mut Vec<Problem
                             "uses doc with a list, {}, which only the crate-root #![doc(test(attr(...)))] of a library target may",
                             render(&tokens[index..=index + 1])
                         ),
+                        decision: "D48",
+                    });
+                }
+            }
+            TokenTree::Ident(ident) if ident.unraw() == "include" => {
+                if is_macro_bang(&tokens, index + 1) {
+                    let end = if matches!(tokens.get(index + 2), Some(TokenTree::Group(_))) {
+                        index + 2
+                    } else {
+                        index + 1
+                    };
+                    problems.push(Problem {
+                        line: Some(ident.span().start().line),
+                        text: format!(
+                            "calls include!, {}, which makes rustc read a file the scan does not",
+                            render(&tokens[index..=end])
+                        ),
+                        decision: "D49",
+                    });
+                }
+            }
+            TokenTree::Ident(ident)
+                if ident.unraw() == "use" && !is_punct(tokens.get(index + 1), '<') =>
+            {
+                let end = tokens[index..]
+                    .iter()
+                    .position(|token| is_punct(Some(token), ';'))
+                    .map_or(tokens.len(), |offset| index + offset);
+                if names_include(&tokens[index + 1..end]) {
+                    problems.push(Problem {
+                        line: Some(ident.span().start().line),
+                        text: format!(
+                            "names include in use {}, which could rebind include! to another name",
+                            render(&tokens[index + 1..end])
+                        ),
+                        decision: "D49",
                     });
                 }
             }
@@ -174,6 +241,35 @@ fn attribute_at(tokens: &[TokenTree], index: usize) -> Option<(&Group, bool)> {
 
 fn is_punct(token: Option<&TokenTree>, ch: char) -> bool {
     matches!(token, Some(TokenTree::Punct(punct)) if punct.as_char() == ch)
+}
+
+/// True when the token at `index` is the `!` of a macro call, not of `!=`.
+fn is_macro_bang(tokens: &[TokenTree], index: usize) -> bool {
+    match tokens.get(index) {
+        Some(TokenTree::Punct(bang)) if bang.as_char() == '!' => {
+            bang.spacing() == Spacing::Alone || !is_punct(tokens.get(index + 1), '=')
+        }
+        _ => false,
+    }
+}
+
+/// True when the ident `path` is followed by `=` at any depth.
+fn sets_path(stream: TokenStream) -> bool {
+    let tokens: Vec<TokenTree> = stream.into_iter().collect();
+    tokens.iter().enumerate().any(|(index, token)| match token {
+        TokenTree::Ident(ident) => ident.unraw() == "path" && is_punct(tokens.get(index + 1), '='),
+        TokenTree::Group(group) => sets_path(group.stream()),
+        _ => false,
+    })
+}
+
+/// True when a use tree holds the ident `include` at any depth.
+fn names_include(tree: &[TokenTree]) -> bool {
+    tree.iter().any(|token| match token {
+        TokenTree::Ident(ident) => ident.unraw() == "include",
+        TokenTree::Group(group) => names_include(&group.stream().into_iter().collect::<Vec<_>>()),
+        _ => false,
+    })
 }
 
 fn holds_dollar(stream: TokenStream) -> bool {
@@ -255,7 +351,7 @@ mod tests {
     fn texts(code: &str, library_root: bool) -> Vec<String> {
         scan(code, library_root)
             .into_iter()
-            .map(|problem| format!("{:?} {}", problem.line, problem.text))
+            .map(|problem| format!("{:?} {} ({})", problem.line, problem.text, problem.decision))
             .collect()
     }
 
@@ -341,7 +437,7 @@ mod tests {
         assert_eq!(
             found,
             [
-                "Some(2) uses doc with a list, doc (test (attr (allow (unused)))), which only the crate-root #![doc(test(attr(...)))] of a library target may"
+                "Some(2) uses doc with a list, doc (test (attr (allow (unused)))), which only the crate-root #![doc(test(attr(...)))] of a library target may (D48)"
             ]
         );
     }
@@ -361,7 +457,9 @@ mod tests {
         }
         assert_eq!(
             texts("macro_rules! m { ($m:meta) => { #![$m] }; }", true),
-            ["Some(1) has an attribute holding a $ token, #! [$ m], which no attribute may hold"]
+            [
+                "Some(1) has an attribute holding a $ token, #! [$ m], which no attribute may hold (D48)"
+            ]
         );
     }
 
@@ -384,6 +482,105 @@ mod tests {
         ] {
             accepted(code, false);
             accepted(code, true);
+        }
+    }
+
+    #[test]
+    fn attributes_that_set_path_are_rejected() {
+        for code in [
+            "#[path = \"x\"]\nmod m;",
+            "#![path = \"x\"]",
+            "#[cfg_attr(all(), path = \"x\")]\nmod m;",
+            "#[cfg_attr(all(), cfg_attr(all(), path = \"x\"))]\nmod m;",
+            "#[r#path = \"x\"]\nmod m;",
+            "mod outer {\n    #[path = \"x\"]\n    mod m;\n}",
+            "macro_rules! m { () => { #[path = \"x\"] mod m; }; }",
+        ] {
+            rejected_with(code, false, "has an attribute that sets path");
+            rejected_with(code, false, "(D49)");
+        }
+        assert_eq!(
+            texts("\n#[path = \"m.txt\"]\npub mod m;", false),
+            [
+                "Some(2) has an attribute that sets path, # [path = \"m.txt\"], which makes rustc read a file the scan does not (D49)"
+            ]
+        );
+    }
+
+    #[test]
+    fn include_calls_are_rejected_by_any_path() {
+        for code in [
+            "include!(\"x\");",
+            "std::include!(\"x\");",
+            "core::include!(\"x\");",
+            "::core::include!(\"x\");",
+            "r#include!(\"x\");",
+            "include! { \"x\" }",
+            "include![\"x\"];",
+            "fn f() { let v = vec![include!(\"x\")]; }",
+            "macro_rules! m { () => { include!(\"x\"); }; }",
+            "macro_rules! m { ($f:literal) => { include!($f) }; }",
+            "include!",
+            "include!;",
+        ] {
+            rejected_with(code, false, "calls include!");
+            rejected_with(code, false, "(D49)");
+        }
+        assert_eq!(
+            texts("\ninclude!(\"inc.in\");", false),
+            [
+                "Some(2) calls include!, include ! (\"inc.in\"), which makes rustc read a file the scan does not (D49)"
+            ]
+        );
+        assert_eq!(
+            texts("include!", false),
+            [
+                "Some(1) calls include!, include !, which makes rustc read a file the scan does not (D49)"
+            ]
+        );
+    }
+
+    #[test]
+    fn use_items_naming_include_are_rejected() {
+        for code in [
+            "use std::include as inc;",
+            "use std::{include};",
+            "use std::{fmt, macros::{r#include as i}};",
+            "pub use core::include;",
+            "use core::include",
+            "mod m {\n    use std::include as inc;\n}",
+        ] {
+            rejected_with(code, false, "names include in use");
+            rejected_with(code, false, "(D49)");
+        }
+        assert_eq!(
+            texts("use std::include as inc;", false),
+            [
+                "Some(1) names include in use std :: include as inc, which could rebind include! to another name (D49)"
+            ]
+        );
+    }
+
+    #[test]
+    fn path_and_include_outside_those_forms_are_accepted() {
+        for code in [
+            "let path = 1;",
+            "fn f(path: u8) {}",
+            "let s = S { path: 1 };",
+            "#[doc = \"path = x\"]\nfn f() {}",
+            "#[cfg(feature = \"path\")]\nfn f() {}",
+            "#[cfg(path)]\nfn f() {}",
+            "let s = include_str!(\"x\");",
+            "let b = include_bytes!(\"x\");",
+            "let s = \"include!(x) use std::include as inc; #[path = x]\";",
+            "// include!(\"x\"); #[path = \"x\"]\nfn f() {}",
+            "use std::path::Path;",
+            "use std::{path::{Path, PathBuf}, fs};",
+            "fn f<'a>(x: &'a u8) -> impl Sized + use<'a> { x }",
+            "let include = 1; let same = include != 2;",
+            "let include = true; let other = !include;",
+        ] {
+            accepted(code, false);
         }
     }
 
