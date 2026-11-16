@@ -2,9 +2,58 @@
 # The project gate. Runs every step, keeps going after a failure, prints one
 # PASS or FAIL line per step and exits non-zero if any step failed.
 set -u
+
+# The gate takes no arguments. Every cargo, uv and tool command line is built
+# here and in scripts/checks.sh, and no step accepts extra arguments from the
+# caller, so nothing like cargo's --config can come in from outside (D55).
+if (($# > 0)); then
+    echo "gate.sh takes no arguments, and got $#. Run it as ./gate.sh."
+    exit 2
+fi
+
+# The only environment variables the gate keeps from its caller (D55). The
+# gate runs again under env -i with these alone, so RUSTC, RUSTC_WRAPPER,
+# RUSTFLAGS, CARGO_* and UV_* from the caller's shell never reach a step.
+# CARGO_HOME, CARGO_TARGET_DIR, VIRTUAL_ENV and UV_PROJECT_ENVIRONMENT are set
+# below by the gate itself, and the steps set their own per-command variables.
+GATE_ENV_KEEP=(
+    PATH HOME RUSTUP_HOME TMPDIR LANG
+    http_proxy https_proxy HTTP_PROXY HTTPS_PROXY all_proxy ALL_PROXY no_proxy NO_PROXY
+    SSL_CERT_FILE SSL_CERT_DIR CURL_CA_BUNDLE REQUESTS_CA_BUNDLE
+)
+# Variables bash exports by itself, even under env -i.
+GATE_ENV_SHELL=(PWD OLDPWD SHLVL _)
+for name in $(compgen -e); do
+    if [[ " ${GATE_ENV_KEEP[*]} ${GATE_ENV_SHELL[*]} " != *" $name "* ]]; then
+        kept=()
+        for keep in "${GATE_ENV_KEEP[@]}"; do
+            [[ -v $keep ]] && kept+=("$keep=${!keep}")
+        done
+        exec env -i "${kept[@]}" "$BASH" "$0"
+    fi
+done
+
 cd "$(dirname "$0")" || exit 2
 # shellcheck source=scripts/checks.sh
 source scripts/checks.sh
+
+# A fresh cargo home and target directory for this run alone, removed when
+# the gate ends, also on failure or interrupt (D55). Crates are downloaded and
+# checksum-verified each run, and no build output from an earlier run, built
+# perhaps from an edited cache, is reused.
+if ! GATE_TMP=$(mktemp -d); then
+    echo "mktemp -d failed, so the gate has no fresh cargo home. Check that TMPDIR is writable."
+    exit 2
+fi
+# shellcheck disable=SC2329 # Called through trap, which shellcheck does not follow.
+remove_gate_tmp() {
+    rm -rf -- "${GATE_TMP:?}"
+}
+trap remove_gate_tmp EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+export CARGO_HOME="$GATE_TMP/cargo-home" CARGO_TARGET_DIR="$GATE_TMP/target"
+mkdir -p "$CARGO_HOME" "$CARGO_TARGET_DIR" || exit 2
 
 VENV=.venv
 export VIRTUAL_ENV="$PWD/$VENV"
@@ -86,8 +135,9 @@ banned_names() {
 # nothing it checked.
 tree_before=$(python3 -I -c "$TREE_STATE_PY" snapshot 2>&1)
 
-# First, because the cargo steps build nasion-py, whose PyO3 build script runs
-# the interpreter in .venv.
+step "cargo env" check_cargo_env "${GATE_ENV_KEEP[*]}"
+# Before the cargo steps, because they build nasion-py, whose PyO3 build script
+# runs the interpreter in .venv.
 step "python env" check_python_env
 python_env_status=$last_status
 step "cargo fmt" fail_on_warnings cargo fmt --all --check

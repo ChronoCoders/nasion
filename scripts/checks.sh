@@ -171,7 +171,7 @@ check_unsafe_allow() {
         local target_args=()
         [[ $target != "$HOST_TARGET" ]] && target_args=(--target "$target")
         output=$(PYO3_CROSS_PYTHON_VERSION=$python RUSTFLAGS="-F unsafe_code" \
-            CARGO_TARGET_DIR="target/forbid-check-$target" CARGO_TERM_COLOR=never \
+            CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}/forbid-check-$target" CARGO_TERM_COLOR=never \
             cargo check --locked --workspace --all-targets --all-features "${target_args[@]}" 2>&1)
         status=$?
         if ((status == 0)); then
@@ -458,7 +458,7 @@ check_clippy() {
     for target in "$HOST_TARGET" "${CROSS_TARGETS[@]}"; do
         target_args=()
         [[ $target != "$HOST_TARGET" ]] && target_args=(--target "$target")
-        PYO3_CROSS_PYTHON_VERSION=$python CARGO_TARGET_DIR="target/clippy-$target" \
+        PYO3_CROSS_PYTHON_VERSION=$python CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}/clippy-$target" \
             check_cargo_lints_warning cargo clippy --locked --workspace --all-targets --all-features \
             "${target_args[@]}" -- -D warnings
         status=$?
@@ -471,6 +471,30 @@ check_clippy() {
         fi
     done
     return "$worst"
+}
+
+# With a fresh CARGO_HOME, the only cargo config files left are .cargo/config
+# and .cargo/config.toml in the working directory and each parent (walk_tree
+# in src/context/mod.rs of cargo 1.100.0). The gate allows none of them,
+# whatever they hold (D55). $1 is the gate's environment allowlist, shown in
+# the note so a run records what it kept.
+check_cargo_env() {
+    local dir=$PWD name found=()
+    while :; do
+        for name in config config.toml; do
+            if [[ -e $dir/.cargo/$name || -L $dir/.cargo/$name ]]; then
+                found+=("$dir/.cargo/$name")
+            fi
+        done
+        [[ $dir == / ]] && break
+        dir=$(dirname "$dir")
+    done
+    if ((${#found[@]} > 0)); then
+        printf '%s\n' "${found[@]}"
+        echo "Cargo reads the config files above for every build from this directory, and the gate allows none (D55). Move them out of the repository and its parent directories."
+        return 1
+    fi
+    echo "note: env $1; set by the gate: CARGO_HOME CARGO_TARGET_DIR VIRTUAL_ENV UV_PROJECT_ENVIRONMENT"
 }
 
 # The Python environment is locked and built by the gate (D28, D54). uv.lock

@@ -37,7 +37,7 @@ pub fn check(
             "{PYTHON_VERSION_VAR} is not usable ({e}). scripts/checks.sh sets it from requires-python in pyproject.toml, so run this check through gate.sh."
         )
     })?;
-    let target_dir = root.join("target").join("dep-info");
+    let target_dir = dep_info_target_dir(root, std::env::var_os("CARGO_TARGET_DIR"));
     let files_dir = target_dir.join("files");
     fs::create_dir_all(&files_dir)
         .map_err(|e| format!("{} cannot be created: {e}", files_dir.display()))?;
@@ -63,6 +63,17 @@ pub fn check(
         }
     }
     Ok((count, problems))
+}
+
+/// The build directory for the dep-info runs: `dep-info` under the target
+/// directory the gate set in `CARGO_TARGET_DIR`, else under `target/`. A
+/// relative target directory resolves against the workspace root, as cargo
+/// resolves it.
+fn dep_info_target_dir(root: &Path, target: Option<OsString>) -> PathBuf {
+    match target.filter(|target| !target.is_empty()) {
+        Some(target) => root.join(target).join("dep-info"),
+        None => root.join("target").join("dep-info"),
+    }
 }
 
 /// Builds one package for one target and returns the files its dep-info lists.
@@ -239,7 +250,31 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
 
-    use super::{parse, unscanned};
+    use std::ffi::OsString;
+    use std::path::Path;
+
+    use super::{dep_info_target_dir, parse, unscanned};
+
+    #[test]
+    fn the_dep_info_build_follows_the_target_directory() {
+        let root = Path::new("/ws");
+        assert_eq!(
+            dep_info_target_dir(root, None),
+            Path::new("/ws/target/dep-info")
+        );
+        assert_eq!(
+            dep_info_target_dir(root, Some(OsString::new())),
+            Path::new("/ws/target/dep-info")
+        );
+        assert_eq!(
+            dep_info_target_dir(root, Some(OsString::from("/tmp/run/target"))),
+            Path::new("/tmp/run/target/dep-info")
+        );
+        assert_eq!(
+            dep_info_target_dir(root, Some(OsString::from("out"))),
+            Path::new("/ws/out/dep-info")
+        );
+    }
 
     #[test]
     fn rules_and_phony_lines_give_every_listed_file() {
