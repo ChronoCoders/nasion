@@ -21,10 +21,29 @@ GATE_ENV_KEEP=(
     http_proxy https_proxy HTTP_PROXY HTTPS_PROXY all_proxy ALL_PROXY no_proxy NO_PROXY
     SSL_CERT_FILE SSL_CERT_DIR CURL_CA_BUNDLE REQUESTS_CA_BUNDLE
 )
-# Variables bash exports by itself, even under env -i.
-GATE_ENV_SHELL=(PWD OLDPWD SHLVL _)
-for name in $(compgen -e); do
-    if [[ " ${GATE_ENV_KEEP[*]} ${GATE_ENV_SHELL[*]} " != *" $name "* ]]; then
+# The check reads the environment this process was started with, not the
+# variables bash lists, because bash imports more than compgen -e shows. Read
+# in bash 5.2 (the version here, 5.2.21): the manual says functions are
+# exported "with the -f option to the export builtin", and
+# initialize_shell_variables in variables.c imports every entry named
+# BASH_FUNC_<name>%% whose value starts with "() {" as a function, whatever
+# the name, and marks it exported. An entry whose name is not a valid
+# identifier is kept as an invisible exported variable. Neither shows in
+# compgen -e, and both reach child processes. So any entry not on the
+# allowlist, an exported function included, makes the gate run again under
+# env -i, which passes the allowlisted variables alone. That second run starts
+# with nothing else, so it does not run again.
+if ! mapfile -d '' -t GATE_ENV_START </proc/$$/environ; then
+    echo "Reading /proc/$$/environ failed, so the gate cannot check the environment it started with."
+    exit 2
+fi
+declare -A GATE_ENV_ALLOWED=()
+for keep in "${GATE_ENV_KEEP[@]}"; do
+    GATE_ENV_ALLOWED[$keep]=1
+done
+for entry in "${GATE_ENV_START[@]}"; do
+    name=${entry%%=*}
+    if [[ -z $name || -z ${GATE_ENV_ALLOWED[$name]-} ]]; then
         kept=()
         for keep in "${GATE_ENV_KEEP[@]}"; do
             [[ -v $keep ]] && kept+=("$keep=${!keep}")
