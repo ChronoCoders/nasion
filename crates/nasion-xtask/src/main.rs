@@ -25,6 +25,10 @@
 //! - No workspace manifest has a `[patch]` or `[replace]` table, and no cargo
 //!   config or environment variable can swap where package code comes from
 //!   (D53). The `cargo_sources` module holds that check.
+//! - The cross targets come only from rust-toolchain.toml, and the host target
+//!   only from `scripts/checks.sh` through `NASION_HOST_TARGET` (D59). The
+//!   `toolchain` module reads them, and `nasion-xtask toolchain-targets` prints
+//!   the cross targets for the shell, one per line.
 //!
 //! The target kind comes from cargo metadata, never from the file name.
 //!
@@ -37,6 +41,7 @@ mod dep_info;
 mod doc_attributes;
 mod doctests;
 mod proc_macros;
+mod toolchain;
 
 use std::ffi::OsString;
 use std::fs;
@@ -80,7 +85,15 @@ impl Target {
 }
 
 fn main() -> ExitCode {
-    let (code, message) = match check_workspace() {
+    let args: Vec<OsString> = std::env::args_os().skip(1).collect();
+    let outcome = match args.as_slice() {
+        [] => check_workspace(),
+        [command] if command == "toolchain-targets" => print_targets().map(|()| Vec::new()),
+        _ => Err(format!(
+            "nasion-xtask takes no arguments, or toolchain-targets alone, and got {args:?}."
+        )),
+    };
+    let (code, message) = match outcome {
         Ok(missing) if missing.is_empty() => (CLEAN, None),
         Ok(missing) => (VIOLATION, Some(missing.join("\n"))),
         Err(message) => (CANNOT_RUN, Some(message)),
@@ -94,9 +107,27 @@ fn main() -> ExitCode {
     }
 }
 
+/// Prints the cross targets from rust-toolchain.toml, one per line, for
+/// `scripts/checks.sh` (D59).
+fn print_targets() -> Result<(), String> {
+    let (root, _) = workspace_targets(&cargo())?;
+    let host = toolchain::host_target(std::env::var(toolchain::HOST_VAR).ok())?;
+    let targets = toolchain::cross_targets(&root, &host)?;
+    let mut out = io::stdout().lock();
+    for target in targets {
+        writeln!(out, "{target}")
+            .map_err(|e| format!("writing the targets to stdout failed: {e}"))?;
+    }
+    Ok(())
+}
+
+fn cargo() -> OsString {
+    std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into())
+}
+
 /// Returns one line per missing attribute or lowered lint level.
 fn check_workspace() -> Result<Vec<String>, String> {
-    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let cargo = cargo();
     let (root, targets) = workspace_targets(&cargo)?;
     if targets.is_empty() {
         return Err(
@@ -132,7 +163,10 @@ fn check_workspace() -> Result<Vec<String>, String> {
         .collect();
     library_packages.sort_unstable();
     library_packages.dedup();
-    let (dep_info_count, problems) = dep_info::check(&cargo, &root, &library_packages)?;
+    let host = toolchain::host_target(std::env::var(toolchain::HOST_VAR).ok())?;
+    let cross = toolchain::cross_targets(&root, &host)?;
+    let (dep_info_count, problems) =
+        dep_info::check(&cargo, &root, &library_packages, &host, &cross)?;
     missing.extend(problems);
     let (doctest_count, problems) = doctests::check(&cargo, &root)?;
     missing.extend(problems);

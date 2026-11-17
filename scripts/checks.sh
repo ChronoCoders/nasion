@@ -94,8 +94,34 @@ check_instruction_paths() {
 # --target, because with --target cargo does not pass RUSTFLAGS to build
 # scripts and proc macros. Returns 2 when the host is not the Linux target, a
 # target is not installed or cargo fails for another reason.
+#
+# The gate runs on this target only. It is written here once and passed to
+# the xtask as NASION_HOST_TARGET. The cross targets come only from the
+# targets list in rust-toolchain.toml, read by the xtask (D59).
 HOST_TARGET=x86_64-unknown-linux-gnu
-CROSS_TARGETS=(x86_64-pc-windows-msvc)
+
+# Prints the cross targets from rust-toolchain.toml, one per line, through
+# the xtask's strict reader, which also fails when the host target is listed
+# there (D59). Returns 2 and prints why when that fails.
+cross_targets() {
+    local errors output status
+    if ! errors=$(mktemp); then
+        echo "mktemp failed, so the cross targets cannot be read. Check that the temporary directory is writable."
+        return 2
+    fi
+    output=$(NASION_HOST_TARGET=$HOST_TARGET CARGO_TERM_COLOR=never \
+        cargo run --locked --quiet -p nasion-xtask -- toolchain-targets 2>"$errors")
+    status=$?
+    if ((status != 0)); then
+        cat "$errors"
+        [[ -n $output ]] && echo "$output"
+        echo "Reading the cross targets from rust-toolchain.toml failed (exit $status)."
+        rm -f "$errors"
+        return 2
+    fi
+    rm -f "$errors"
+    echo "$output"
+}
 
 # Prints the lowest Python version allowed by requires-python in
 # pyproject.toml. PyO3 needs it when it cannot run the target's interpreter.
@@ -114,11 +140,12 @@ if match is None:
 print(match.group(1))
 '
 
-# Checks that rustc runs on HOST_TARGET and that every cross target is
-# installed, then prints the lowest Python version from requires-python.
-# Returns 2 and prints why when any of that fails.
+# Checks that rustc runs on HOST_TARGET and that every cross target in
+# rust-toolchain.toml is installed, then prints the lowest Python version from
+# requires-python on the first line and the cross targets on the lines after
+# it. Returns 2 and prints why when any of that fails.
 targets_ready() {
-    local version host_lines hosts=() host shown sysroot target found_python
+    local version host_lines hosts=() host shown sysroot target found_python cross list=()
     if ! version=$(rustc -vV); then
         echo "rustc -vV failed. Check that the toolchain in rust-toolchain.toml is installed."
         return 2
@@ -148,7 +175,12 @@ targets_ready() {
         echo "rustc reports host $shown, printed shell-quoted so hidden characters show. The gate runs on $HOST_TARGET, so the host check would not cover that target."
         return 2
     fi
-    for target in "${CROSS_TARGETS[@]}"; do
+    if ! cross=$(cross_targets); then
+        echo "$cross"
+        return 2
+    fi
+    mapfile -t list <<<"$cross"
+    for target in "${list[@]}"; do
         if [[ ! -d $sysroot/lib/rustlib/$target/lib ]]; then
             echo "The standard library for $target is not installed in $sysroot. Run rustup target add $target."
             return 2
@@ -159,15 +191,18 @@ targets_ready() {
         return 2
     fi
     echo "$found_python"
+    echo "$cross"
 }
 
 check_unsafe_allow() {
-    local python target output status worst=0 unsafe_targets=()
-    if ! python=$(targets_ready); then
-        echo "$python"
+    local ready lines python target output status worst=0 unsafe_targets=()
+    if ! ready=$(targets_ready); then
+        echo "$ready"
         return 2
     fi
-    for target in "$HOST_TARGET" "${CROSS_TARGETS[@]}"; do
+    mapfile -t lines <<<"$ready"
+    python=${lines[0]}
+    for target in "$HOST_TARGET" "${lines[@]:1}"; do
         local target_args=()
         [[ $target != "$HOST_TARGET" ]] && target_args=(--target "$target")
         output=$(PYO3_CROSS_PYTHON_VERSION=$python RUSTFLAGS="-F unsafe_code" \
@@ -267,7 +302,7 @@ sys.exit(1 if stray else 0)
 # targets come from cargo metadata, never from a fixed list, and every
 # Cargo.toml on disk must belong to a member so none escapes that list.
 check_deny_unsafe() {
-    local meta meta_err missing stray status output python warned=0
+    local meta meta_err missing stray status output ready python warned=0
     if ! meta_err=$(mktemp); then
         echo "mktemp failed, so the stderr of cargo metadata cannot be kept. Check that the temporary directory is writable."
         return 2
@@ -297,13 +332,15 @@ check_deny_unsafe() {
         return 2
     fi
     missing+=${stray:+${missing:+$'\n'}$stray}
-    if ! python=$(targets_ready); then
-        echo "$python"
+    if ! ready=$(targets_ready); then
+        echo "$ready"
         return 2
     fi
+    python=${ready%%$'\n'*}
     # Without --quiet, because --quiet also hides cargo's warnings. The Python
-    # version is for the PyO3 cross builds of the D50 dep-info check.
-    output=$(NASION_PYO3_CROSS_PYTHON_VERSION=$python CARGO_TERM_COLOR=never cargo run --locked -p nasion-xtask 2>&1)
+    # version is for the PyO3 cross builds of the D50 dep-info check, and the
+    # host target for its host run (D59).
+    output=$(NASION_HOST_TARGET=$HOST_TARGET NASION_PYO3_CROSS_PYTHON_VERSION=$python CARGO_TERM_COLOR=never cargo run --locked -p nasion-xtask 2>&1)
     status=$?
     echo "$output"
     if ((status > 1)); then
@@ -450,12 +487,14 @@ check_cargo_lints_warning() {
 # directory. Each run fails on warnings and on the [lints] warning, and a
 # failure names the target.
 check_clippy() {
-    local python target status worst=0 target_args
-    if ! python=$(targets_ready); then
-        echo "$python"
+    local ready lines python target status worst=0 target_args
+    if ! ready=$(targets_ready); then
+        echo "$ready"
         return 2
     fi
-    for target in "$HOST_TARGET" "${CROSS_TARGETS[@]}"; do
+    mapfile -t lines <<<"$ready"
+    python=${lines[0]}
+    for target in "$HOST_TARGET" "${lines[@]:1}"; do
         target_args=()
         [[ $target != "$HOST_TARGET" ]] && target_args=(--target "$target")
         PYO3_CROSS_PYTHON_VERSION=$python CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}/clippy-$target" \

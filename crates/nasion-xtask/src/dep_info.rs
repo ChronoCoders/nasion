@@ -16,21 +16,21 @@ use std::process::Command;
 
 use crate::doc_attributes::SKIPPED_DIRS;
 
-/// The target the gate runs on, which `scripts/checks.sh` verifies before it
-/// runs this tool. The host run passes no `--target`.
-const HOST_TARGET: &str = "x86_64-unknown-linux-gnu";
-/// The targets in `rust-toolchain.toml` besides the host.
-const CROSS_TARGETS: [&str; 1] = ["x86_64-pc-windows-msvc"];
 /// Set by `scripts/checks.sh` from requires-python in pyproject.toml, and
 /// passed to PyO3 as `PYO3_CROSS_PYTHON_VERSION` for the cross runs.
 const PYTHON_VERSION_VAR: &str = "NASION_PYO3_CROSS_PYTHON_VERSION";
 
-/// Runs the dep-info builds and returns how many dep-info files were read and
-/// one line per listed file the D48 walk does not scan.
+/// Runs the dep-info builds on `host`, with no `--target`, and for each of
+/// `cross`, and returns how many dep-info files were read and one line per
+/// listed file the D48 walk does not scan. Both lists come from the gate:
+/// the host from `scripts/checks.sh`, the cross targets from
+/// rust-toolchain.toml (D59).
 pub fn check(
     cargo: &OsString,
     root: &Path,
     packages: &[&str],
+    host: &str,
+    cross: &[String],
 ) -> Result<(usize, Vec<String>), String> {
     let python = std::env::var(PYTHON_VERSION_VAR).map_err(|e| {
         format!(
@@ -43,13 +43,13 @@ pub fn check(
         .map_err(|e| format!("{} cannot be created: {e}", files_dir.display()))?;
     let triples: Vec<Option<&str>> = [None]
         .into_iter()
-        .chain(CROSS_TARGETS.iter().copied().map(Some))
+        .chain(cross.iter().map(|target| Some(target.as_str())))
         .collect();
     let mut count = 0;
     let mut problems = Vec::new();
     for package in packages {
         for triple in &triples {
-            let label = triple.unwrap_or(HOST_TARGET);
+            let label = triple.unwrap_or(host);
             let file = files_dir.join(format!("{package}-{label}.d"));
             let deps = run(cargo, root, &target_dir, package, *triple, &python, &file)?;
             count += 1;
