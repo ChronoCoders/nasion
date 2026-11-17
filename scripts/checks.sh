@@ -110,8 +110,11 @@ cross_targets() {
         echo "mktemp failed, so the cross targets cannot be read. Check that the temporary directory is writable."
         return 2
     fi
+    # Without --quiet, because --quiet also hides cargo's warnings while it
+    # builds the xtask (D41). The list is on stdout, all of cargo's lines and
+    # the xtask's own stderr are in the file.
     output=$(NASION_HOST_TARGET=$HOST_TARGET CARGO_TERM_COLOR=never \
-        cargo run --locked --quiet -p nasion-xtask -- toolchain-targets 2>"$errors")
+        cargo run --locked -p nasion-xtask -- toolchain-targets 2>"$errors")
     status=$?
     if ((status != 0)); then
         cat "$errors"
@@ -120,7 +123,7 @@ cross_targets() {
         rm -f "$errors"
         return 2
     fi
-    warning_lines "$(<"$errors")" "nasion-xtask toolchain-targets"
+    warning_lines "$(<"$errors")" "cargo run -p nasion-xtask -- toolchain-targets"
     status=$?
     rm -f "$errors"
     if ((status != 0)); then
