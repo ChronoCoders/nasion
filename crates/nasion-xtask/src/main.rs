@@ -36,6 +36,7 @@
 //! attribute or a doctest lowers a lint level, 2 the check could not run.
 #![deny(unsafe_code)]
 
+mod cargo_cmd;
 mod cargo_sources;
 mod dep_info;
 mod doc_attributes;
@@ -58,6 +59,10 @@ const CANNOT_RUN: u8 = 2;
 
 /// Target kinds that run on the build machine during the build.
 const BUILD_MACHINE_KINDS: [&str; 2] = ["custom-build", "proc-macro"];
+/// Library kinds cargo doc-tests: `Target::doctestable` in
+/// src/workspace/manifest.rs of cargo 1.100.0. Cargo warns when asked to
+/// doc-test any other kind, such as a cdylib.
+const DOCTEST_KINDS: [&str; 3] = ["lib", "rlib", "proc-macro"];
 /// Target kinds rustdoc can run doctests for, now or after a crate-type change.
 const LIBRARY_KINDS: [&str; 6] = ["lib", "rlib", "dylib", "cdylib", "staticlib", "proc-macro"];
 
@@ -110,7 +115,7 @@ fn main() -> ExitCode {
 /// Prints the cross targets from rust-toolchain.toml, one per line, for
 /// `scripts/checks.sh` (D59).
 fn print_targets() -> Result<(), String> {
-    let (root, _) = workspace_targets(&cargo())?;
+    let (root, _) = workspace_targets(&cargo(), &mut io::stderr())?;
     let host = toolchain::host_target(std::env::var(toolchain::HOST_VAR).ok())?;
     let targets = toolchain::cross_targets(&root, &host)?;
     let mut out = io::stdout().lock();
@@ -128,7 +133,8 @@ fn cargo() -> OsString {
 /// Returns one line per missing attribute or lowered lint level.
 fn check_workspace() -> Result<Vec<String>, String> {
     let cargo = cargo();
-    let (root, targets) = workspace_targets(&cargo)?;
+    let mut log = io::stderr();
+    let (root, targets) = workspace_targets(&cargo, &mut log)?;
     if targets.is_empty() {
         return Err(
             "cargo metadata listed no targets. Check the workspace members in Cargo.toml.".into(),
@@ -166,11 +172,18 @@ fn check_workspace() -> Result<Vec<String>, String> {
     let host = toolchain::host_target(std::env::var(toolchain::HOST_VAR).ok())?;
     let cross = toolchain::cross_targets(&root, &host)?;
     let (dep_info_count, problems) =
-        dep_info::check(&cargo, &root, &library_packages, &host, &cross)?;
+        dep_info::check(&cargo, &root, &library_packages, &host, &cross, &mut log)?;
     missing.extend(problems);
-    let (doctest_count, problems) = doctests::check(&cargo, &root)?;
+    let mut doctest_packages: Vec<&str> = targets
+        .iter()
+        .filter(|target| target.has_kind(&DOCTEST_KINDS))
+        .map(|target| target.package.as_str())
+        .collect();
+    doctest_packages.sort_unstable();
+    doctest_packages.dedup();
+    let (doctest_count, problems) = doctests::check(&cargo, &root, &doctest_packages, &mut log)?;
     missing.extend(problems);
-    let (proc_macro_count, problems) = proc_macros::check(&cargo, &root)?;
+    let (proc_macro_count, problems) = proc_macros::check(&cargo, &root, &mut log)?;
     missing.extend(problems);
 
     if missing.is_empty() {
@@ -222,16 +235,19 @@ fn check_target(target: &Target) -> Result<Vec<String>, String> {
 /// Returns the workspace root and every target of every workspace member. Uses
 /// the cargo that ran this tool when there is one, so the pinned toolchain
 /// answers.
-fn workspace_targets(cargo: &OsString) -> Result<(PathBuf, Vec<Target>), String> {
-    let output = Command::new(cargo)
-        .args(["metadata", "--no-deps", "--format-version", "1"])
-        .output()
-        .map_err(|e| format!("starting {} failed: {e}", cargo.to_string_lossy()))?;
+fn workspace_targets(
+    cargo: &OsString,
+    log: &mut dyn Write,
+) -> Result<(PathBuf, Vec<Target>), String> {
+    let output = cargo_cmd::run(
+        Command::new(cargo).args(["metadata", "--no-deps", "--format-version", "1"]),
+        "cargo metadata --no-deps --format-version 1",
+        log,
+    )?;
     if !output.status.success() {
         return Err(format!(
-            "cargo metadata failed ({}). Check that every Cargo.toml in the workspace parses.\n{}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr).trim_end()
+            "cargo metadata failed ({}). Check that every Cargo.toml in the workspace parses. Its stderr is above.",
+            output.status
         ));
     }
     let metadata: serde_json::Value = serde_json::from_slice(&output.stdout)
@@ -355,6 +371,25 @@ fn holds_nested(list: &MetaList, names: &[&str], leaf: &str) -> syn::Result<bool
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn the_workspace_metadata_run_forwards_cargo_stderr() {
+        use crate::cargo_cmd::tests::fake::{FakeCargo, assert_forwarded};
+        let fake = FakeCargo::new("metadata-no-deps");
+        for warn in [true, false] {
+            let cargo = fake.script(
+                if warn { "warn" } else { "clean" },
+                r#"printf '{"workspace_root":"/ws","packages":[]}'"#,
+                warn,
+            );
+            let mut log = Vec::new();
+            let (root, targets) = super::workspace_targets(&cargo, &mut log).unwrap();
+            assert_eq!(root, std::path::PathBuf::from("/ws"));
+            assert!(targets.is_empty());
+            assert_forwarded(&log, "metadata --no-deps --format-version 1", warn);
+        }
+    }
+
     use super::{Level, doctests_set, unsafe_code_level};
 
     fn level(source: &str) -> Option<Level> {

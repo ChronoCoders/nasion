@@ -82,8 +82,13 @@ impl CodeBlock {
 }
 
 /// Returns the number of doctests rustdoc lists and one line per problem.
-pub fn check(cargo: &OsStr, root: &Path) -> Result<(usize, Vec<String>), String> {
-    let listed = list(cargo, root)?;
+pub fn check(
+    cargo: &OsStr,
+    root: &Path,
+    packages: &[&str],
+    log: &mut dyn std::io::Write,
+) -> Result<(usize, Vec<String>), String> {
+    let listed = list(cargo, root, packages, log)?;
     let mut parsed: HashMap<PathBuf, Vec<CodeBlock>> = HashMap::new();
     let mut problems = Vec::new();
     for doctest in &listed {
@@ -128,25 +133,32 @@ pub fn check(cargo: &OsStr, root: &Path) -> Result<(usize, Vec<String>), String>
     Ok((listed.len(), problems))
 }
 
-fn list(cargo: &OsStr, root: &Path) -> Result<Vec<Listed>, String> {
-    let output = Command::new(cargo)
-        .current_dir(root)
-        .args([
-            "test",
-            "--locked",
-            "--workspace",
-            "--all-features",
-            "--doc",
-            "--",
-            "--list",
-        ])
-        .output()
-        .map_err(|e| format!("starting {} failed: {e}", cargo.to_string_lossy()))?;
+/// Lists the doctests of `packages`, the packages whose library target
+/// rustdoc can doc-test. Naming them, not passing --workspace, keeps cargo from
+/// warning about a cdylib it cannot doc-test.
+fn list(
+    cargo: &OsStr,
+    root: &Path,
+    packages: &[&str],
+    log: &mut dyn std::io::Write,
+) -> Result<Vec<Listed>, String> {
+    if packages.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut args = vec!["test", "--locked", "--all-features", "--doc"];
+    for package in packages {
+        args.extend(["-p", package]);
+    }
+    args.extend(["--", "--list"]);
+    let output = crate::cargo_cmd::run(
+        Command::new(cargo).current_dir(root).args(&args),
+        &format!("cargo {}", args.join(" ")),
+        log,
+    )?;
     if !output.status.success() {
         return Err(format!(
-            "cargo test --doc -- --list failed ({}). Check that the workspace and its doctests build.\n{}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr).trim_end()
+            "cargo test --doc -- --list failed ({}). Check that the workspace and its doctests build. Its stderr is above.",
+            output.status
         ));
     }
     let stdout = String::from_utf8(output.stdout)
@@ -587,6 +599,35 @@ fn lowers(stream: TokenStream) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn the_doctest_list_run_forwards_cargo_stderr() {
+        use crate::cargo_cmd::tests::fake::{FakeCargo, assert_forwarded};
+        let fake = FakeCargo::new("test-doc-list");
+        for warn in [true, false] {
+            let cargo = fake.script(if warn { "warn" } else { "clean" }, "true", warn);
+            let mut log = Vec::new();
+            assert!(
+                super::list(&cargo, &fake.0, &["core"], &mut log)
+                    .unwrap()
+                    .is_empty()
+            );
+            assert_forwarded(
+                &log,
+                "test --locked --all-features --doc -p core -- --list",
+                warn,
+            );
+        }
+        let cargo = fake.script("unused", "touch ran", false);
+        let mut log = Vec::new();
+        assert!(
+            super::list(&cargo, &fake.0, &[], &mut log)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(log.is_empty() && !fake.0.join("ran").exists());
+    }
+
     use super::{
         DERIVES, MACROS, compiled_code, compiled_line, fenced_blocks, parse_list_line, scan,
     };

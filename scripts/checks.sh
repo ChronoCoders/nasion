@@ -102,7 +102,8 @@ HOST_TARGET=x86_64-unknown-linux-gnu
 
 # Prints the cross targets from rust-toolchain.toml, one per line, through
 # the xtask's strict reader, which also fails when the host target is listed
-# there (D59). Returns 2 and prints why when that fails.
+# there (D59). Returns 2 and prints why when that fails, or when the xtask's
+# stderr holds a warning line, such as one it forwarded from cargo (D41).
 cross_targets() {
     local errors output status
     if ! errors=$(mktemp); then
@@ -119,7 +120,13 @@ cross_targets() {
         rm -f "$errors"
         return 2
     fi
+    warning_lines "$(<"$errors")" "nasion-xtask toolchain-targets"
+    status=$?
     rm -f "$errors"
+    if ((status != 0)); then
+        echo "Reading the cross targets from rust-toolchain.toml printed warnings (D41)."
+        return 2
+    fi
     echo "$output"
 }
 

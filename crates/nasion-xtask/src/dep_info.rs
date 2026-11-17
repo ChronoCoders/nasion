@@ -31,6 +31,7 @@ pub fn check(
     packages: &[&str],
     host: &str,
     cross: &[String],
+    log: &mut dyn std::io::Write,
 ) -> Result<(usize, Vec<String>), String> {
     let python = std::env::var(PYTHON_VERSION_VAR).map_err(|e| {
         format!(
@@ -45,13 +46,19 @@ pub fn check(
         .into_iter()
         .chain(cross.iter().map(|target| Some(target.as_str())))
         .collect();
+    let runs = Runs {
+        cargo,
+        root,
+        target_dir: &target_dir,
+        python: &python,
+    };
     let mut count = 0;
     let mut problems = Vec::new();
     for package in packages {
         for triple in &triples {
             let label = triple.unwrap_or(host);
             let file = files_dir.join(format!("{package}-{label}.d"));
-            let deps = run(cargo, root, &target_dir, package, *triple, &python, &file)?;
+            let deps = run(&runs, package, *triple, &file, log)?;
             count += 1;
             for dep in deps {
                 if let Some(reason) = unscanned(root, &dep) {
@@ -76,15 +83,21 @@ fn dep_info_target_dir(root: &Path, target: Option<OsString>) -> PathBuf {
     }
 }
 
+/// What every dep-info run of one check shares.
+struct Runs<'a> {
+    cargo: &'a OsString,
+    root: &'a Path,
+    target_dir: &'a Path,
+    python: &'a str,
+}
+
 /// Builds one package for one target and returns the files its dep-info lists.
 fn run(
-    cargo: &OsString,
-    root: &Path,
-    target_dir: &Path,
+    runs: &Runs<'_>,
     package: &str,
     triple: Option<&str>,
-    python: &str,
     file: &Path,
+    log: &mut dyn std::io::Write,
 ) -> Result<Vec<String>, String> {
     let file_text = file
         .to_str()
@@ -112,42 +125,34 @@ fn run(
         "--profile",
         "check",
     ];
-    let mut command = Command::new(cargo);
+    let mut command = Command::new(runs.cargo);
     command
-        .current_dir(root)
-        .env("CARGO_TERM_COLOR", "never")
-        .env("CARGO_TARGET_DIR", target_dir);
+        .current_dir(runs.root)
+        .env("CARGO_TARGET_DIR", runs.target_dir);
     if let Some(triple) = triple {
         args.extend(["--target", triple]);
-        command.env("PYO3_CROSS_PYTHON_VERSION", python);
+        command.env("PYO3_CROSS_PYTHON_VERSION", runs.python);
     }
     args.extend(["--", &emit]);
     let shown = format!("cargo {}", args.join(" "));
-    let output = command
-        .args(&args)
-        .output()
-        .map_err(|e| format!("starting {shown} failed: {e}"))?;
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let output = crate::cargo_cmd::run(command.args(&args), &shown, log)?;
     if !output.status.success() {
         return Err(format!(
-            "{shown} failed ({}).\n{}",
-            output.status,
-            stderr.trim_end()
+            "{shown} failed ({}). Its stderr is above.",
+            output.status
         ));
     }
     let text = fs::read_to_string(file).map_err(|e| {
         format!(
-            "{shown} succeeded but {} cannot be read: {e}\n{}",
-            file.display(),
-            stderr.trim_end()
+            "{shown} succeeded but {} cannot be read: {e}. Its stderr is above.",
+            file.display()
         )
     })?;
     let deps = parse(&text).map_err(|e| format!("{} {e}", file.display()))?;
     if deps.is_empty() {
         return Err(format!(
-            "{shown} wrote {} with no dependencies.\n{}",
-            file.display(),
-            stderr.trim_end()
+            "{shown} wrote {} with no dependencies. Its stderr is above.",
+            file.display()
         ));
     }
     Ok(deps)
@@ -247,6 +252,36 @@ fn unscanned(root: &Path, dep: &str) -> Option<&'static str> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn the_dep_info_run_forwards_cargo_stderr() {
+        use crate::cargo_cmd::tests::fake::{FakeCargo, assert_forwarded};
+        let fake = FakeCargo::new("rustc-dep-info");
+        let body = r#"for a in "$@"; do case $a in --emit=dep-info=*) f=${a#--emit=dep-info=}; f=${f%,metadata}; printf 'out.rmeta: src/lib.rs\n' >"$f";; esac; done"#;
+        for warn in [true, false] {
+            let cargo = fake.script(if warn { "warn" } else { "clean" }, body, warn);
+            let mut log = Vec::new();
+            let file = fake.0.join("out.d");
+            let target = fake.0.join("target");
+            let runs = super::Runs {
+                cargo: &cargo,
+                root: &fake.0,
+                target_dir: &target,
+                python: "3.11",
+            };
+            let deps = super::run(
+                &runs,
+                "core",
+                Some("x86_64-pc-windows-msvc"),
+                &file,
+                &mut log,
+            )
+            .unwrap();
+            assert_eq!(deps, ["src/lib.rs"]);
+            assert_forwarded(&log, "rustc --locked -p core --lib", warn);
+        }
+    }
+
     use std::fs;
     use std::path::PathBuf;
 

@@ -75,7 +75,11 @@ const ALLOWED: [(&str, &str, &str); 8] = [
 
 /// Runs cargo metadata with dependencies, reads Cargo.lock, and returns the
 /// number of proc macros in the build graph and one line per problem.
-pub fn check(cargo: &OsString, root: &Path) -> Result<(usize, Vec<String>), String> {
+pub fn check(
+    cargo: &OsString,
+    root: &Path,
+    log: &mut dyn std::io::Write,
+) -> Result<(usize, Vec<String>), String> {
     let args = [
         "metadata",
         "--locked",
@@ -84,25 +88,22 @@ pub fn check(cargo: &OsString, root: &Path) -> Result<(usize, Vec<String>), Stri
         "--all-features",
     ];
     let shown = format!("cargo {}", args.join(" "));
-    let output = Command::new(cargo)
-        .current_dir(root)
-        .env("CARGO_TERM_COLOR", "never")
-        .args(args)
-        .output()
-        .map_err(|e| format!("starting {shown} failed: {e}"))?;
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let output = crate::cargo_cmd::run(
+        Command::new(cargo).current_dir(root).args(args),
+        &shown,
+        log,
+    )?;
     if !output.status.success() {
         return Err(format!(
-            "{shown} failed ({}).\n{}",
-            output.status,
-            stderr.trim_end()
+            "{shown} failed ({}). Its stderr is above.",
+            output.status
         ));
     }
     let lock_path = root.join("Cargo.lock");
     let lock = fs::read_to_string(&lock_path)
         .map_err(|e| format!("{} cannot be read: {e}", lock_path.display()))?;
     let lock = parse_lock(&lock).map_err(|e| format!("{}: {e}", lock_path.display()))?;
-    evaluate_json(&output.stdout, &lock).map_err(|e| format!("{shown}: {e}\n{}", stderr.trim_end()))
+    evaluate_json(&output.stdout, &lock).map_err(|e| format!("{shown}: {e}"))
 }
 
 fn evaluate_json(stdout: &[u8], lock: &[LockEntry]) -> Result<(usize, Vec<String>), String> {
@@ -480,6 +481,29 @@ fn reachable<'a>(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn the_metadata_run_with_dependencies_forwards_cargo_stderr() {
+        use crate::cargo_cmd::tests::fake::{FakeCargo, assert_forwarded};
+        let fake = FakeCargo::new("metadata-deps");
+        std::fs::write(fake.0.join("Cargo.lock"), "version = 4\n").unwrap();
+        for warn in [true, false] {
+            let cargo = fake.script(
+                if warn { "warn" } else { "clean" },
+                r#"printf '{"packages":[],"workspace_members":[],"resolve":{"nodes":[]}}'"#,
+                warn,
+            );
+            let mut log = Vec::new();
+            let (count, _) = super::check(&cargo, &fake.0, &mut log).unwrap();
+            assert_eq!(count, 0);
+            assert_forwarded(
+                &log,
+                "metadata --locked --format-version 1 --all-features",
+                warn,
+            );
+        }
+    }
+
     use serde_json::{Value, json};
 
     use super::{ALLOWED, CRATES_IO, LockEntry, evaluate, evaluate_json, parse_lock};
