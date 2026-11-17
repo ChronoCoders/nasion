@@ -100,6 +100,11 @@ check_instruction_paths() {
 # targets list in rust-toolchain.toml, read by the xtask (D59).
 HOST_TARGET=x86_64-unknown-linux-gnu
 
+# The cargo-audit the gate runs, an exact version (D62). The advisory database
+# is deliberately not pinned: cargo audit fetches it into the fresh CARGO_HOME
+# of every gate run (D55), so each run sees every advisory published so far.
+CARGO_AUDIT_VERSION=0.23.0
+
 # Prints the cross targets from rust-toolchain.toml, one per line, through
 # the xtask's strict reader, which also fails when the host target is listed
 # there (D59). Returns 2 and prints why when that fails, or when the xtask's
@@ -520,6 +525,37 @@ check_clippy() {
         fi
     done
     return "$worst"
+}
+
+# Runs cargo audit once its version is the pinned one (D62). `cargo audit
+# --version` prints "cargo-audit-audit <version>" and nothing else: read in
+# rustsec/rustsec at tag cargo-audit/v0.23.0, where commands/audit.rs puts
+# #[command(version)] on the audit subcommand, so clap prints that
+# subcommand's name, cargo-audit-audit, then the crate version. Any other
+# output, a different version or no cargo-audit at all returns 2 before the
+# audit runs.
+check_cargo_audit() {
+    local output shown found install="cargo install cargo-audit --locked --version $CARGO_AUDIT_VERSION"
+    if ! command -v cargo-audit >/dev/null; then
+        echo "cargo-audit is not on PATH. The gate pins $CARGO_AUDIT_VERSION (D62). Install it: $install"
+        return 2
+    fi
+    if ! output=$(CARGO_TERM_COLOR=never cargo audit --version 2>&1); then
+        echo "$output"
+        echo "cargo audit --version failed. The gate pins cargo-audit $CARGO_AUDIT_VERSION (D62). Install it: $install"
+        return 2
+    fi
+    if [[ ! $output =~ ^cargo-audit-audit\ ([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+        printf -v shown '%q' "$output"
+        echo "cargo audit --version printed $shown, shell-quoted, not \"cargo-audit-audit <version>\". The gate pins cargo-audit $CARGO_AUDIT_VERSION (D62). Install it: $install"
+        return 2
+    fi
+    found=${BASH_REMATCH[1]}
+    if [[ $found != "$CARGO_AUDIT_VERSION" ]]; then
+        echo "cargo-audit is $found, but the gate pins $CARGO_AUDIT_VERSION (D62). Install it: $install"
+        return 2
+    fi
+    fail_on_warnings cargo audit --deny warnings --file Cargo.lock
 }
 
 # With a fresh CARGO_HOME, the only cargo config files left are .cargo/config

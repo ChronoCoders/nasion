@@ -164,7 +164,7 @@ step "cargo clippy" check_clippy
 step "cargo test" fail_on_warnings cargo test --locked --workspace
 step "miri" check_unsafe_allow
 step "deny unsafe" check_deny_unsafe
-step "cargo audit" fail_on_warnings cargo audit --deny warnings --file Cargo.lock
+step "cargo audit" check_cargo_audit
 step "ruff check" venv_tool ruff check python
 step "ruff format" venv_tool ruff format --check python
 step "mypy" venv_tool mypy --strict python
