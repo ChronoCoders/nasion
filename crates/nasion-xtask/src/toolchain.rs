@@ -7,7 +7,7 @@
 //! file holds today, each once, with `channel` and `profile` as quoted plain
 //! tokens and `components` and `targets` as one-line lists of them. Blank
 //! lines and whole-line comments are skipped. Anything else is an error, as
-//! is a missing or empty `targets` list. The host target is a requirement of
+//! is a missing or empty `targets` list, or a target listed twice. The host target is a requirement of
 //! where the gate runs, not a toolchain setting, so it may not be listed.
 
 use std::collections::BTreeSet;
@@ -83,6 +83,10 @@ fn parse(text: &str) -> Result<Vec<String>, String> {
             _ => {
                 let list = token_list(value).map_err(at)?;
                 if key == "targets" {
+                    let mut listed = BTreeSet::new();
+                    if let Some(repeated) = list.iter().find(|target| !listed.insert(*target)) {
+                        return Err(at(format!("{repeated} is listed more than once")));
+                    }
                     targets = Some(list);
                 }
             }
@@ -161,6 +165,32 @@ mod tests {
         assert_eq!(
             parse(text).unwrap(),
             ["x86_64-pc-windows-msvc", "aarch64-unknown-linux-gnu"]
+        );
+    }
+
+    #[test]
+    fn a_repeated_target_is_an_error() {
+        for (text, triple) in [
+            (
+                "[toolchain]\ntargets = [\"x86_64-pc-windows-msvc\", \"x86_64-pc-windows-msvc\"]\n",
+                "x86_64-pc-windows-msvc",
+            ),
+            (
+                "[toolchain]\nchannel = \"1.100.0\"\ntargets = [\"a\", \"b\", \"a\"]\n",
+                "a",
+            ),
+        ] {
+            let line = text.lines().count();
+            assert_eq!(
+                error(text),
+                format!("line {line}, targets: {triple} is listed more than once"),
+                "{text:?}"
+            );
+        }
+        assert_eq!(parse(TODAY).unwrap(), ["x86_64-pc-windows-msvc"]);
+        assert_eq!(
+            parse("[toolchain]\ntargets = [\"a\", \"b\"]\n").unwrap(),
+            ["a", "b"]
         );
     }
 
